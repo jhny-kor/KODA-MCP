@@ -1,0 +1,16 @@
+{
+  "public_host": "koda-mcp.internal.example",
+  "allowed_origins": ["https://openwebui.internal.example"],
+  "tokens": [
+    {
+      "id": "openwebui-service",
+      "token_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "enabled": true
+    },
+    {
+      "id": "continue-user-01",
+      "token_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "enabled": true
+    }
+  ]
+}

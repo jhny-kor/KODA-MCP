@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "source": {
+    "url": "https://github.com/jhny-kor/sec-chk.git",
+    "commit": "b2987c1211e745aa9dc99db94e0ad7eb73cc11e4",
+    "license": "Apache-2.0",
+    "notice": "NOTICE"
+  },
+  "source_tree_sha256": "adbf09b9f24cd14e01472b4878150dd86a36bfc7261b130fd4017cd955ac5376",
+  "files": [
+    {
+      "source_path": "LICENSE",
+      "target_path": "LICENSE",
+      "sha256": "dc3617e3d28177f3f02b2ec8dcd7e51d3eae277453c025756a54568afbbd2ac7",
+      "kind": "copied"
+    },
+    {
+      "source_path": "NOTICE",
+      "target_path": "NOTICE",
+      "sha256": "293019c7c0076352e2c3a1bca616faef7a548b2b1b59d34aa11ea707a7814031",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/models.py",
+      "target_path": "src/koda_core/models.py",
+      "sha256": "2c685e55d554e31709e0cf10020f5318f5d9d50cbb61eb1d760e7b355fdd6add",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/__init__.py",
+      "target_path": "src/koda_core/checks/__init__.py",
+      "sha256": "7e23b4733ce1b9eccd2deae1ddde368d6b2132d90a8c84fe7c7d626d629944df",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/common.py",
+      "target_path": "src/koda_core/checks/common.py",
+      "sha256": "f3cba2f8dee5369c1f0e42731bf59e24f49235499fe59b7ad9fa82e63a5b4918",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/secrets.py",
+      "target_path": "src/koda_core/checks/secrets.py",
+      "sha256": "87a5af2e50d226be60c2a61fb3212392ae8b8f0e6e53b454f0365216b64b2194",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/code_patterns.py",
+      "target_path": "src/koda_core/checks/code_patterns.py",
+      "sha256": "d4c467960dc1c8499b0e26e57af7b3bd484cbc369f3338c3c1e49f493b1d7a25",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/configuration.py",
+      "target_path": "src/koda_core/checks/configuration.py",
+      "sha256": "7d5b22d85c7591b4eb45cda458122ac9da3d8bc2e908bef95ec556c86d40ae65",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/checks/dependencies.py",
+      "target_path": "src/koda_core/checks/dependencies.py",
+      "sha256": "55d9ec678b061f4d96cb93f1192ef33b6598bd27b4c3dd7c77cf5e381a6a234f",
+      "kind": "copied"
+    },
+    {
+      "source_path": "platforms/shared/python/security_scanner/standards.py",
+      "source_sha256": "89dc043cd330066b40353b8c45bd7f9d0c7fc7a1e9afe1bf1233a0c751c7d3b0",
+      "target_path": "src/koda_mcp/standard_catalog_data.py",
+      "sha256": "c9fdc57d1ef132c0a6e0af5b8273a6ec0e4ac4367947fef202e08b83b9233948",
+      "kind": "derived"
+    },
+    {
+      "source_path": null,
+      "target_path": "src/koda_core/__init__.py",
+      "sha256": "generated-empty-package-file",
+      "kind": "generated"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+This repository contains the KODA core files listed in SOURCE_PROVENANCE.json.
+They are distributed under Apache License 2.0 with the accompanying NOTICE.
+
+Runtime dependencies:
+- mcp 2.0.0: MIT License
+- pydantic 2.x: MIT License
+- uvicorn 0.x: BSD 3-Clause License
+
+The exact Linux amd64/Python 3.12 dependency artifacts are identified by
+requirements-linux-amd64-py312.lock and WHEELS.sha256 in an air-gap bundle.

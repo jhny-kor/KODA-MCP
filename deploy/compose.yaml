@@ -1,0 +1,30 @@
+services:
+  koda-mcp:
+    image: ${KODA_MCP_IMAGE:-koda-mcp-security:0.1.0}
+    platform: linux/amd64
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 64
+    ports:
+      - "127.0.0.1:8766:8766"
+    volumes:
+      - type: bind
+        source: ${KODA_MCP_CONFIG_PATH:?Set KODA_MCP_CONFIG_PATH to a mode 0400 config file}
+        target: /run/secrets/koda_mcp.json
+        read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777,size=64m
+    networks:
+      - koda_internal
+    restart: unless-stopped
+
+networks:
+  koda_internal:
+    internal: true

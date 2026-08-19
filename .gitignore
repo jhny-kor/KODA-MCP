@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+wheelhouse/
+dist/
+build/
+*.egg-info/
+config/koda_mcp.json

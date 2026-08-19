@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "koda-mcp-security"
+version = "0.1.0"
+description = "Closed-network advisory MCP for changed-file security review"
+readme = "README.ko.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = [
+  "mcp==2.0.0",
+  "pydantic>=2.12,<3",
+  "uvicorn>=0.31.1,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
