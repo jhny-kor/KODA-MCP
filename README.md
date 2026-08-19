@@ -87,7 +87,3 @@ mcpServers:
 ```
 
 실제 완료 판정에는 Continue에서 두 도구 호출, finding 존재·0개 fixture, KODA 중단 fallback, non-Git workspace를 각각 확인해야 합니다. 실제 FQDN·CA·token·tool-calling 모델이 제공되지 않은 환경에서는 이 항목을 `UNVERIFIED`로 기록합니다.
-
-## 원본과 라이선스
-
-복사된 KODA core 파일과 원본 `standards.py`에서 생성한 축약 매핑의 원본 커밋·경로·SHA-256은 [SOURCE_PROVENANCE.json](SOURCE_PROVENANCE.json)에 고정했습니다. 원본의 Apache-2.0 `LICENSE`와 `NOTICE`를 유지하며, 실행 의존성 고지는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에 있습니다.
