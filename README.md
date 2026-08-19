@@ -27,7 +27,7 @@ MCP 엔드포인트는 `https://<KODA_FQDN>/mcp`이며 Continue용 token과 Open
 
 응답의 `completed/partial`은 안전·준수 판정이 아니며, finding이 없을 때도 제공된 파일에서 발견사항이 관찰되지 않았다는 의미만 가집니다. 실패·busy·timeout은 작업을 차단하지 않는 `not_evaluated` 상태입니다.
 
-별도 기준을 지정하지 않으면 두 도구 모두 `sw-dev-security-49`를 기준으로 점검하며, KODA 자체 기준은 사용하지 않습니다. 명시적으로 선택할 수 있는 기준은 `cwe-top-25-2025`, `owasp-top-10-2025`, `owasp-asvs-5`, `owasp-proactive-controls`, `sw-dev-security-7-types`, `kisa-secure-coding-guide`입니다. 응답의 `selected_standard`가 실제 적용 기준이고, 해당 기준에 매핑되지 않은 규칙은 finding에서 제외됩니다.
+별도 기준을 지정하지 않으면 두 도구 모두 `sw-dev-security-49`를 기준으로 점검하며, 선택할 수 있는 기준은 `cwe-top-25-2025`, `owasp-top-10-2025`, `owasp-asvs-5`, `owasp-proactive-controls`, `sw-dev-security-7-types`, `kisa-secure-coding-guide`입니다. 응답의 `selected_standard`가 실제 적용 기준이고, 해당 기준에 매핑되지 않은 규칙은 finding에서 제외됩니다.
 
 각 guidance item과 finding의 `criteria`에는 감사된 표준 매핑의 기준 ID·항목명·분류·CWE가 포함됩니다. `direct_control`은 탐지 규칙에 직접 연결된 소프트웨어 개발보안 49 항목이고, `related_category`는 CWE·OWASP·KISA의 관련 범주입니다. `standard_references`에는 판본·발행기관·원문 URL이 있으며, `criteria_truncated=true`이면 응답 크기 제한 때문에 관련 범주 일부가 생략된 것입니다. 이 매핑은 설명 근거이지 형식적 위반·준수 판정이 아닙니다.
 
