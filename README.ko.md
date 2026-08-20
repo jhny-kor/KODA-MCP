@@ -27,9 +27,11 @@ MCP 엔드포인트는 `https://<KODA_FQDN>/mcp`이며 Continue용 token과 Open
 
 응답의 `completed/partial`은 안전·준수 판정이 아니며, finding이 없을 때도 제공된 파일에서 발견사항이 관찰되지 않았다는 의미만 가집니다. 실패·busy·timeout은 작업을 차단하지 않는 `not_evaluated` 상태입니다.
 
-별도 기준을 지정하지 않으면 두 도구 모두 `sw-dev-security-49`를 기준으로 점검하며, KODA 자체 기준은 사용하지 않습니다. 명시적으로 선택할 수 있는 기준은 `cwe-top-25-2025`, `owasp-top-10-2025`, `owasp-asvs-5`, `owasp-proactive-controls`, `sw-dev-security-7-types`, `kisa-secure-coding-guide`입니다. 응답의 `selected_standard`가 실제 적용 기준이고, 해당 기준에 매핑되지 않은 규칙은 finding에서 제외됩니다.
+별도 기준을 지정하지 않으면 두 도구 모두 `sw-dev-security-49`를 기준으로 점검하며, KODA 자체 기준은 사용하지 않습니다. 명시적으로 선택할 수 있는 기준은 `cwe-top-25-2025`, `owasp-top-10-2025`, `owasp-asvs-5`, `owasp-proactive-controls`, `sw-dev-security-7-types`, `kisa-secure-coding-guide`입니다. `all`은 KODA core가 탐지한 finding을 기준으로 필터링하지 않고 지원하는 모든 기준 매핑을 붙입니다. 응답의 `selected_standard`가 실제 적용 기준이며, 단일 기준 모드에서는 해당 기준에 매핑되지 않은 규칙이 제외됩니다.
 
-각 guidance item과 finding의 `criteria`에는 감사된 표준 매핑의 기준 ID·항목명·분류·CWE가 포함됩니다. `direct_control`은 탐지 규칙에 직접 연결된 소프트웨어 개발보안 49 항목이고, `related_category`는 CWE·OWASP·KISA의 관련 범주입니다. `standard_references`에는 판본·발행기관·원문 URL이 있으며, `criteria_truncated=true`이면 응답 크기 제한 때문에 관련 범주 일부가 생략된 것입니다. 이 매핑은 설명 근거이지 형식적 위반·준수 판정이 아닙니다.
+각 guidance item과 finding의 `criteria`에는 감사된 표준 매핑의 기준 ID·항목명·분류·CWE가 포함됩니다. `direct_control`은 탐지 규칙에 직접 연결된 소프트웨어 개발보안 49 항목이고, `related_category`는 CWE·OWASP·KISA의 관련 범주입니다. `all`에서는 각 finding의 모든 지원 기준 매핑을 생략 없이 반환하며, 단일 기준 모드의 `criteria_truncated=true`는 관련 범주 일부가 응답 크기 제한으로 생략됐다는 뜻입니다. `standard_references`에는 판본·발행기관·원문 URL이 있습니다. 이 매핑은 설명 근거이지 형식적 위반·준수 판정이 아닙니다.
+
+각 line-level finding은 `start_line`, `end_line`, `redacted_snippet`, `reason`을 함께 반환합니다. 알려진 비밀번호·토큰·키 값은 snippet에서 `<redacted>`로 완전히 대체됩니다. 여러 줄에서 발견되면 각 줄이 별도 finding으로 반환되며, `findings_truncated=true`이면 안전 한도를 넘어 일부 finding이 생략된 상태입니다.
 
 ## Continue 기본 구성
 
@@ -57,6 +59,7 @@ rules:
   - |
       KODA는 비차단 보안 자문 도구다.
       사용자가 다른 기준을 명시하지 않으면 standard는 sw-dev-security-49를 사용한다.
+      사용자가 모든 기준을 요청한 경우에만 standard=all을 사용하고, criteria를 기준별로 묶어 모두 설명한다.
       실행 보안에 영향을 주는 작업 전에는 koda_get_security_guidance 호출을 시도한다.
       변경이 끝나면 직접 변경하거나 생성한 텍스트 파일의 전체 내용만
       koda_scan_changed_files에 한 번 전달한다.
@@ -66,6 +69,11 @@ rules:
       completed/partial을 PASS 또는 안전·준수로 표현하지 않는다.
       finding을 설명할 때 selected_standard, 경로·줄·rule_id 다음에 적용 기준의 criterion_id·항목명을 우선 제시하고,
       관련 CWE·OWASP·ASVS related_category와 권고조치를 함께 설명한다.
+      selected_standard=all이면 각 finding의 criteria를 standard_id별로 묶고 어느 기준도 생략하지 않는다.
+      모든 finding을 합치거나 생략하지 말고 각각 별도 절로 출력한다.
+      각 절에는 경로와 줄 범위, redacted_snippet 문제 코드, 기준 항목, reason, verification_status,
+      권고조치와 문맥에 맞는 수정 코드 예시를 포함한다. <redacted> 값은 추측하거나 복원하지 않는다.
+      findings_truncated=true이면 추가 finding이 안전 한도로 생략됐다고 명시한다.
       related_category를 직접 위반으로 단정하지 않고 mapping_notice와 coverage_gaps를 반드시 반영한다.
       최종 응답에는 아래 상태 중 하나를 정확히 한 줄 포함한다:
       KODA: completed/partial — <N> findings in provided files
@@ -90,4 +98,4 @@ mcpServers:
 
 ## 원본과 라이선스
 
-복사된 KODA core 파일과 원본 `standards.py`에서 생성한 축약 매핑의 원본 커밋·경로·SHA-256은 [SOURCE_PROVENANCE.json](SOURCE_PROVENANCE.json)에 고정했습니다. 원본의 Apache-2.0 `LICENSE`와 `NOTICE`를 유지하며, 실행 의존성 고지는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에 있습니다.
+복사된 KODA core 파일과 원본 `standards.py`에서 생성한 축약 매핑의 원본 커밋·경로·SHA-256은 [SOURCE_PROVENANCE.json](SOURCE_PROVENANCE.json)에 고정했습니다. MCP는 이 KODA core 탐지 규칙을 재구현하거나 탐지 결과를 억제하지 않고, 요청된 기준에 따른 필터·매핑과 안전한 응답 처리만 수행합니다. 원본의 Apache-2.0 `LICENSE`와 `NOTICE`를 유지하며, 실행 의존성 고지는 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)에 있습니다.

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from koda_core import models
-from koda_core.checks import code_patterns, configuration, dependencies, secrets
+from koda_core.checks import code_patterns, common, configuration, dependencies, secrets
 
 from .contracts import (
     ChangedFilesRequest,
@@ -38,8 +38,9 @@ KODA_SOURCE_TREE_SHA256 = "adbf09b9f24cd14e01472b4878150dd86a36bfc7261b130fd4017
 MAX_FILES = 20
 MAX_FILE_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
-MAX_RESULT_BYTES = 1024 * 1024
+MAX_RESULT_BYTES = 2 * 1024 * 1024
 MAX_CRITERIA_PER_RULE = 5
+MAX_SNIPPET_CHARS = 500
 DEFAULT_STANDARD_ID: StandardId = "sw-dev-security-49"
 SCAN_TIMEOUT_SECONDS = 60.0
 TEMP_ROOT_BASE = Path("/tmp/koda-mcp")
@@ -123,6 +124,8 @@ def _criteria_for_rule(
     selected_standard: StandardId = DEFAULT_STANDARD_ID,
 ) -> tuple[list[dict[str, Any]], bool]:
     mappings = RULE_STANDARD_MAPPINGS.get(rule_id, ())
+    if selected_standard == "all":
+        return [dict(item) for item in mappings], False
     selected = [item for item in mappings if item["standard_id"] == selected_standard][:MAX_CRITERIA_PER_RULE]
     represented = {item["standard_id"] for item in selected}
     for item in mappings:
@@ -139,13 +142,17 @@ def _criteria_for_rule(
 
 
 def _rule_matches_standard(rule_id: str, standard_id: StandardId) -> bool:
-    return any(item["standard_id"] == standard_id for item in RULE_STANDARD_MAPPINGS.get(rule_id, ()))
+    return standard_id == "all" or any(
+        item["standard_id"] == standard_id for item in RULE_STANDARD_MAPPINGS.get(rule_id, ())
+    )
 
 
 def _standard_references_for_rules(
     rule_ids: set[str],
     selected_standard: StandardId,
 ) -> list[dict[str, Any]]:
+    if selected_standard == "all":
+        return [STANDARD_REFERENCES[standard_id] for standard_id in STANDARD_ORDER]
     referenced = {selected_standard} | {
         item["standard_id"]
         for rule_id in rule_ids
@@ -348,6 +355,42 @@ def _write_worker_result(result_path: Path, payload: dict[str, Any]) -> None:
         handle.write(encoded)
 
 
+def _mask_secret_match(match: re.Match[str], secret_group: int) -> str:
+    if secret_group == 0:
+        return "<redacted>"
+    start, end = match.span(secret_group)
+    if start < 0:
+        return "<redacted>"
+    relative_start = start - match.start()
+    relative_end = end - match.start()
+    value = match.group(0)
+    return f"{value[:relative_start]}<redacted>{value[relative_end:]}"
+
+
+def _redact_source_line(line: str) -> str:
+    redacted = line.replace("\t", "    ")
+    for rule in secrets.SECRET_RULES:
+        redacted = rule.pattern.sub(
+            lambda match, group=rule.secret_group: _mask_secret_match(match, group),
+            redacted,
+        )
+    cleaned = "".join(
+        character
+        for character in redacted
+        if unicodedata.category(character) not in {"Cc", "Cf"}
+    )
+    return cleaned if len(cleaned) <= MAX_SNIPPET_CHARS else f"{cleaned[:MAX_SNIPPET_CHARS - 3]}..."
+
+
+def _redacted_source_location(finding: models.Finding) -> tuple[int | None, int | None, str | None]:
+    if finding.line is None:
+        return None, None, None
+    lines = common.read_text_lines(finding.path, MAX_FILE_BYTES)
+    if lines is None or finding.line > len(lines):
+        raise ValueError("finding line escaped source")
+    return finding.line, finding.line, _redact_source_line(lines[finding.line - 1])
+
+
 def _safe_finding(
     finding: models.Finding,
     root: Path,
@@ -368,6 +411,7 @@ def _safe_finding(
         raise ValueError("finding path escaped root") from exc
     if relative not in input_paths:
         raise ValueError("finding path was not provided")
+    start_line, end_line, redacted_snippet = _redacted_source_location(finding)
     criteria, criteria_truncated = _criteria_for_rule(finding.rule_id, selected_standard)
     return {
         "rule_id": finding.rule_id,
@@ -376,6 +420,14 @@ def _safe_finding(
         "title": _remove_control_characters(finding.title, 200, "Security finding"),
         "path": relative,
         "line": finding.line,
+        "start_line": start_line,
+        "end_line": end_line,
+        "redacted_snippet": redacted_snippet,
+        "reason": _remove_control_characters(
+            finding.description,
+            500,
+            "The selected rule matched this source location; review the surrounding context.",
+        ),
         "recommendation": _remove_control_characters(
             finding.recommendation,
             1000,
@@ -403,6 +455,7 @@ def _scan_worker(
     root = Path(temp_root_value)
     result_path = Path(result_path_value)
     try:
+        common.clear_read_text_cache()
         target = models.TargetConfig(
             name="mcp-request",
             path=root,
@@ -461,7 +514,7 @@ def _read_worker_result(result_path: Path, input_paths: set[str]) -> tuple[list[
         for item in raw_findings:
             if not isinstance(item, dict) or set(item) != {
                 "rule_id", "severity", "verification_status", "title", "path", "line", "recommendation",
-                "criteria", "criteria_truncated"
+                "start_line", "end_line", "redacted_snippet", "reason", "criteria", "criteria_truncated"
             }:
                 return None
             if (
@@ -470,6 +523,10 @@ def _read_worker_result(result_path: Path, input_paths: set[str]) -> tuple[list[
                 or not isinstance(item["path"], str)
                 or item["path"] not in input_paths
                 or (item["line"] is not None and (isinstance(item["line"], bool) or not isinstance(item["line"], int) or item["line"] < 1))
+                or item["start_line"] != item["line"]
+                or item["end_line"] != item["line"]
+                or (item["line"] is None and item["redacted_snippet"] is not None)
+                or (item["line"] is not None and not isinstance(item["redacted_snippet"], str))
             ):
                 return None
             findings.append(ScanFinding.model_validate(item, strict=True))
@@ -621,11 +678,6 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
                         gaps.append("dependency_lockfile_presence_not_evaluated")
                     if findings_truncated:
                         gaps.append("findings_truncated")
-                    findings = [
-                        finding
-                        for finding in findings
-                        if finding.rule_id != "dependency.node-missing-lockfile"
-                    ]
                     response = _response(
                         request_id,
                         file_count,

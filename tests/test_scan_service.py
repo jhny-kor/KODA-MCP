@@ -61,9 +61,11 @@ class ScanServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(result.findings), 1)
         self.assertTrue(all(set(item.model_dump()) == {
             "rule_id", "severity", "verification_status", "title", "path", "line", "recommendation",
-            "criteria", "criteria_truncated"
+            "start_line", "end_line", "redacted_snippet", "reason", "criteria", "criteria_truncated"
         } for item in result.findings))
         secret_finding = next(item for item in result.findings if item.rule_id == "secret.generic-assignment")
+        self.assertEqual((secret_finding.start_line, secret_finding.end_line), (1, 1))
+        self.assertEqual(secret_finding.redacted_snippet, 'password = "<redacted>"')
         sw49 = next(item for item in secret_finding.criteria if item.standard_id == "sw-dev-security-49")
         self.assertEqual((sw49.criterion_id, sw49.criterion_labels.ko), ("S-06", "하드코드된 중요정보"))
         self.assertEqual(sw49.cwe_ids, ["CWE-259", "CWE-321", "CWE-798"])
@@ -72,6 +74,15 @@ class ScanServiceTests(unittest.TestCase):
         rendered = result.model_dump_json()
         self.assertNotIn(secret, rendered)
         self.assertFalse(any(scan_service.TEMP_ROOT_BASE.glob("*")))
+
+    def test_each_detected_source_line_is_returned_separately(self) -> None:
+        first = 'cursor.execute("SELECT * FROM users WHERE id=" + request.query["id"])'
+        second = 'cursor.execute("DELETE FROM users WHERE id=" + request.query["other"])'
+        result = self._scan(("src/query.py", f"{first}\n{second}\n"))
+        findings = [item for item in result.findings if item.rule_id == "code.sql-dynamic-query"]
+        self.assertEqual([(item.start_line, item.end_line) for item in findings], [(1, 1), (2, 2)])
+        self.assertEqual([item.redacted_snippet for item in findings], [first, second])
+        self.assertTrue(all(item.reason for item in findings))
 
     def test_request_directory_name_matches_response_request_id(self) -> None:
         cleaned_roots: list[str] = []
@@ -153,11 +164,15 @@ class ScanServiceTests(unittest.TestCase):
             result = self._scan((f"artifact{extension.upper()}", ""))
             self.assertEqual(result.error_code, "unsupported_file_type", extension)
 
-    def test_package_lockfile_gap_is_explicit_and_missing_lock_finding_is_removed(self) -> None:
-        result = self._scan(("package.json", '{"dependencies":{"demo":"1.0.0"}}'))
+    def test_package_lockfile_finding_matches_koda_core(self) -> None:
+        request = ChangedFilesRequest(
+            files=[ChangedFile(path="package.json", content='{"dependencies":{"demo":"1.0.0"}}')],
+            standard="all",
+        )
+        result = asyncio.run(scan_service.scan_changed_files(request))
         self.assertEqual(result.execution_status, "completed")
         self.assertIn("dependency_lockfile_presence_not_evaluated", result.coverage_gaps)
-        self.assertNotIn("dependency.node-missing-lockfile", {item.rule_id for item in result.findings})
+        self.assertIn("dependency.node-missing-lockfile", {item.rule_id for item in result.findings})
 
     def test_busy_does_not_create_temp_files(self) -> None:
         request = ChangedFilesRequest(files=[ChangedFile(path="src/a.py", content="")])
@@ -182,7 +197,7 @@ class ScanServiceTests(unittest.TestCase):
         self.assertTrue(item.criteria_truncated)
         self.assertEqual(guidance.mapping_notice, "rule_mapping_not_formal_compliance")
 
-    def test_standard_defaults_to_sw49_and_explicit_standard_filters_findings(self) -> None:
+    def test_standard_defaults_to_sw49_and_all_preserves_koda_findings(self) -> None:
         def run_worker(standard: str) -> list[dict[str, object]]:
             root = Path(self.tempdir.name) / standard
             root.mkdir()
@@ -203,7 +218,7 @@ class ScanServiceTests(unittest.TestCase):
                         description="redacted",
                         recommendation="fix",
                     )
-                    for rule_id in ("code.sql-dynamic-query", "code.api-mass-assignment")
+                    for rule_id in ("code.sql-dynamic-query", "code.api-mass-assignment", "code.unmapped-sentinel")
                 ]
 
             with mock.patch.object(scan_service, "CHECKS", (("code", checker),)):
@@ -222,26 +237,45 @@ class ScanServiceTests(unittest.TestCase):
         )
         self.assertTrue(all(item["criteria"][0]["standard_id"] == "cwe-top-25-2025" for item in cwe_findings))
 
+        all_findings = run_worker("all")
+        self.assertEqual(
+            {item["rule_id"] for item in all_findings},
+            {"code.sql-dynamic-query", "code.api-mass-assignment", "code.unmapped-sentinel"},
+        )
+        sql = next(item for item in all_findings if item["rule_id"] == "code.sql-dynamic-query")
+        self.assertEqual(sql["criteria"], list(scan_service.RULE_STANDARD_MAPPINGS["code.sql-dynamic-query"]))
+        self.assertFalse(sql["criteria_truncated"])
+        self.assertEqual(
+            [item["standard_id"] for item in scan_service._standard_references_for_rules(set(), "all")],
+            list(scan_service.STANDARD_ORDER),
+        )
+        self.assertEqual(GuidanceRequest(task_summary="SQL", standard="all").standard, "all")
+
         with self.assertRaises(ValidationError):
             GuidanceRequest(task_summary="SQL", standard="local")
 
     def test_standard_criteria_stay_within_worker_result_limit(self) -> None:
         worst = 0
-        for rule_id in scan_service.RULE_STANDARD_MAPPINGS:
-            criteria, truncated = scan_service._criteria_for_rule(rule_id)
-            item = {
-                "rule_id": rule_id,
-                "severity": "critical",
-                "verification_status": "needs_review",
-                "title": "x" * 200,
-                "path": "x" * 1024,
-                "line": 1,
-                "recommendation": "x" * 1000,
-                "criteria": criteria,
-                "criteria_truncated": truncated,
-            }
-            payload = {"version": 1, "status": "ok", "findings": [item] * 200, "findings_truncated": True}
-            worst = max(worst, len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()))
+        for standard in ("sw-dev-security-49", "all"):
+            for rule_id in scan_service.RULE_STANDARD_MAPPINGS:
+                criteria, truncated = scan_service._criteria_for_rule(rule_id, standard)
+                item = {
+                    "rule_id": rule_id,
+                    "severity": "critical",
+                    "verification_status": "needs_review",
+                    "title": "x" * 200,
+                    "path": "x" * 1024,
+                    "line": 1,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "redacted_snippet": "x" * 500,
+                    "reason": "x" * 500,
+                    "recommendation": "x" * 1000,
+                    "criteria": criteria,
+                    "criteria_truncated": truncated,
+                }
+                payload = {"version": 1, "status": "ok", "findings": [item] * 200, "findings_truncated": True}
+                worst = max(worst, len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()))
         self.assertLessEqual(worst, scan_service.MAX_RESULT_BYTES)
 
     def test_corrupt_worker_result_is_rejected_and_cleaned(self) -> None:
@@ -309,7 +343,7 @@ class ScanServiceTests(unittest.TestCase):
         root = Path(self.tempdir.name) / "bulk"
         root.mkdir()
         source_path = root / "a.py"
-        source_path.write_text("sentinel-source-line", encoding="utf-8")
+        source_path.write_text("\n".join(f"source-line-{index}" for index in range(1, 206)), encoding="utf-8")
         result_path = root / ".result.json"
 
         def bulk_checker(path, _target):
@@ -321,7 +355,7 @@ class ScanServiceTests(unittest.TestCase):
                     title="title\x00\u200b",
                     path=path,
                     line=index + 1,
-                    evidence="sentinel-source-line",
+                    evidence="untrusted-evidence-must-not-be-used",
                     description="sentinel-description",
                     recommendation="fix\x00this",
                 )
@@ -334,17 +368,17 @@ class ScanServiceTests(unittest.TestCase):
         rendered = json.dumps(payload)
         self.assertEqual(len(payload["findings"]), 200)
         self.assertTrue(payload["findings_truncated"])
-        self.assertNotIn("sentinel", rendered)
         self.assertNotIn("evidence", rendered)
-        self.assertNotIn("description", rendered)
+        self.assertNotIn("untrusted-evidence-must-not-be-used", rendered)
         self.assertEqual(
             payload["findings"],
             sorted(payload["findings"], key=scan_service._finding_sort_key),
         )
         self.assertTrue(all(set(item) == {
             "rule_id", "severity", "verification_status", "title", "path", "line", "recommendation",
-            "criteria", "criteria_truncated"
+            "start_line", "end_line", "redacted_snippet", "reason", "criteria", "criteria_truncated"
         } for item in payload["findings"]))
+        self.assertTrue(all(item["redacted_snippet"] == f"source-line-{item['line']}" for item in payload["findings"]))
         self.assertTrue(all(item["criteria"][0]["criterion_id"] == "I-01" for item in payload["findings"]))
 
     def test_content_nul_is_input_validation_error(self) -> None:

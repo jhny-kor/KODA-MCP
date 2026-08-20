@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 StandardId = Literal[
+    "all",
     "sw-dev-security-49",
     "cwe-top-25-2025",
     "owasp-top-10-2025",
@@ -137,6 +138,13 @@ class ScanFinding(BaseModel):
     title: str
     path: str
     line: int | None
+    start_line: int | None
+    end_line: int | None
+    redacted_snippet: str | None = Field(
+        max_length=500,
+        description="Exact detected source line with known secret values replaced by <redacted>",
+    )
+    reason: str = Field(max_length=500)
     recommendation: str
     criteria: list[StandardCriterion] = Field(description="Mapped criteria ordered with direct controls first")
     criteria_truncated: bool = Field(description="True when lower-priority related mappings were omitted")

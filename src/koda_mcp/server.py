@@ -361,9 +361,14 @@ def _build_mcp_server() -> MCPServer:
             "KODA is advisory-only. It evaluates only complete text files supplied by the client "
             "and never reads the developer workspace. Results are partial and non-blocking. "
             "Use sw-dev-security-49 unless the user explicitly requests another supported standard. "
-            "For each result, explain the selected standard, rule, path and line, primary criteria first, then useful "
-            "related_category references and remediation. Never describe a mapping as formal compliance "
-            "or a definitive standards violation."
+            "Use standard=all only when the user asks for every supported standards mapping; in that mode, preserve "
+            "every KODA core finding and list all criteria grouped by standard without omission. "
+            "For every finding, render one separate section without grouping or omitting returned findings. "
+            "Each section must show path and line range, the redacted_snippet as the problem code, selected-standard "
+            "criterion ID and title, reason, verification status, remediation, and a context-appropriate corrected "
+            "code example. Never reconstruct text replaced by <redacted>. If findings_truncated is true, say that "
+            "additional findings were omitted by the safety limit. Related_category mappings are contextual; never "
+            "describe a mapping as formal compliance or a definitive standards violation."
         ),
     )
 
@@ -373,7 +378,7 @@ def _build_mcp_server() -> MCPServer:
         language: Literal["ko", "en"] = "ko",
         standard: StandardId = "sw-dev-security-49",
     ) -> GuidanceResponse:
-        """Return pre-change security guidance with exact mapped criteria and source references."""
+        """Return KODA guidance criteria for one standard, or every supported mapping with standard=all."""
         return get_security_guidance(
             GuidanceRequest(task_summary=task_summary, language=language, standard=standard)
         )
@@ -383,7 +388,7 @@ def _build_mcp_server() -> MCPServer:
         files: list[ChangedFile],
         standard: StandardId = "sw-dev-security-49",
     ) -> ScanResponse:
-        """Scan complete changed text files and return redacted findings with mapped security criteria."""
+        """Run KODA source checks; return every detected line separately with one standard or all mapped criteria."""
         return await scan_changed_files(ChangedFilesRequest(files=files, standard=standard))
 
     for tool_name in ("koda_get_security_guidance", "koda_scan_changed_files"):

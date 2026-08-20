@@ -281,6 +281,8 @@ class ServerTests(unittest.TestCase):
         ).decode("utf-8")
         self.assertNotIn(secret, response_body)
         self.assertNotIn('"evidence"', response_body)
+        self.assertIn('"redacted_snippet"', response_body)
+        self.assertIn("<redacted>", response_body)
         self.assertNotIn("traceback", response_body.casefold())
 
     def test_tools_have_exact_contract_and_in_memory_guidance_works(self) -> None:
@@ -292,6 +294,9 @@ class ServerTests(unittest.TestCase):
             self.assertIn("criteria", tool.description)
             self.assertFalse(tool.input_schema.get("additionalProperties", True))
             self.assertEqual(tool.input_schema["properties"]["standard"]["default"], "sw-dev-security-49")
+            self.assertIn('"all"', json.dumps(tool.input_schema))
+        scan_tool = next(tool for tool in tools if tool.name == "koda_scan_changed_files")
+        self.assertIn("every detected line separately", scan_tool.description)
 
         async def call() -> Any:
             async with Client(server) as client:
@@ -311,9 +316,13 @@ class ServerTests(unittest.TestCase):
                     "koda_get_security_guidance",
                     {"task_summary": "SQL query", "language": "ko", "standard": "cwe-top-25-2025"},
                 )
-                return guidance, scan, clean_scan, cwe_guidance
+                all_guidance = await client.call_tool(
+                    "koda_get_security_guidance",
+                    {"task_summary": "SQL query", "language": "ko", "standard": "all"},
+                )
+                return guidance, scan, clean_scan, cwe_guidance, all_guidance
 
-        guidance_result, scan_result, clean_scan_result, cwe_guidance_result = asyncio.run(call())
+        guidance_result, scan_result, clean_scan_result, cwe_guidance_result, all_guidance_result = asyncio.run(call())
         self.assertFalse(guidance_result.is_error)
         self.assertTrue(guidance_result.structured_content["advisory_only"])
         guidance_item = next(
@@ -329,6 +338,14 @@ class ServerTests(unittest.TestCase):
             for finding in scan_result.structured_content["findings"]
             for criterion in finding["criteria"]
         ))
+        secret_finding = next(
+            finding for finding in scan_result.structured_content["findings"]
+            if finding["rule_id"] == "secret.generic-assignment"
+        )
+        self.assertEqual(secret_finding["start_line"], 1)
+        self.assertEqual(secret_finding["end_line"], 1)
+        self.assertEqual(secret_finding["redacted_snippet"], 'password = "<redacted>"')
+        self.assertTrue(secret_finding["reason"])
         self.assertNotIn("client-sentinel-secret", json.dumps(scan_result.structured_content))
         self.assertEqual(json.loads(scan_result.content[0].text), scan_result.structured_content)
         self.assertEqual(clean_scan_result.structured_content["execution_status"], "completed")
@@ -338,6 +355,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(
             cwe_guidance_result.structured_content["items"][0]["criteria"][0]["standard_id"],
             "cwe-top-25-2025",
+        )
+        self.assertEqual(all_guidance_result.structured_content["selected_standard"], "all")
+        all_item = next(
+            item for item in all_guidance_result.structured_content["items"]
+            if item["rule_id"] == "code.sql-dynamic-query"
+        )
+        self.assertFalse(all_item["criteria_truncated"])
+        self.assertEqual(
+            {criterion["standard_id"] for criterion in all_item["criteria"]},
+            {reference["standard_id"] for reference in all_guidance_result.structured_content["standard_references"]},
         )
 
     def test_config_must_be_owner_readable_only(self) -> None:
@@ -444,6 +471,7 @@ class ServerTests(unittest.TestCase):
         self.assertIn("mcpServers:", readme)
         self.assertIn("caBundlePath: <ABSOLUTE_INTERNAL_CA_PATH>", readme)
         self.assertIn("Authorization: Bearer ${{ secrets.KODA_MCP_TOKEN }}", readme)
+        self.assertIn("모든 finding을 합치거나 생략하지 말고 각각 별도 절로 출력한다", readme)
 
 
 if __name__ == "__main__":
