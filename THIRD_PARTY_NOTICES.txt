@@ -1,4 +1,4 @@
-This repository contains the KODA core files listed in SOURCE_PROVENANCE.json.
+This repository contains the KODA core files under src/koda_core/.
 They are distributed under Apache License 2.0 with the accompanying NOTICE.
 
 Runtime dependencies:

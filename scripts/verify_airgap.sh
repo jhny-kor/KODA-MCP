@@ -20,7 +20,6 @@ test -f "$bundle_dir/metadata/SHA256SUMS"
 (cd "$bundle_dir" && sha256sum -c metadata/SHA256SUMS)
 test -f "$bundle_dir/metadata/WHEELS.sha256"
 test -f "$bundle_dir/metadata/SBOM.cdx.json"
-test -f "$bundle_dir/metadata/SOURCE_PROVENANCE.json"
 test -f "$bundle_dir/image/koda-mcp-security-0.1.0-amd64.tar"
 test -f "$bundle_dir/deploy/compose.yaml"
 test -f "$bundle_dir/deploy/nginx-mcp.conf.example"

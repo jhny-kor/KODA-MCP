@@ -40,7 +40,7 @@ docker save "$image_tag" > "$bundle_dir/image/koda-mcp-security-0.1.0-amd64.tar"
 cp "$repo_root/deploy/compose.yaml" "$repo_root/deploy/nginx-mcp.conf.example" "$bundle_dir/deploy/"
 cp "$repo_root/deploy/koda_mcp.example.json" "$bundle_dir/config/"
 cp "$repo_root/deploy/README-airgap.ko.md" "$repo_root/LICENSE" "$repo_root/NOTICE" "$repo_root/THIRD_PARTY_NOTICES.txt" "$bundle_dir/"
-cp "$repo_root/requirements-linux-amd64-py312.lock" "$repo_root/SOURCE_PROVENANCE.json" "$bundle_dir/metadata/"
+cp "$repo_root/requirements-linux-amd64-py312.lock" "$bundle_dir/metadata/"
 (cd "$wheelhouse_dir" && sha256sum -- *.whl) > "$bundle_dir/metadata/WHEELS.sha256"
 "${sbom_command[@]}" > "$bundle_dir/metadata/SBOM.cdx.json"
 

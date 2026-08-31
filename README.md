@@ -9,7 +9,6 @@
 연결망 Python 환경에 고정 의존성을 설치한 뒤 실행합니다.
 
 ```bash
-python3 scripts/verify_source.py
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 python3 -m compileall -q src
 ```
