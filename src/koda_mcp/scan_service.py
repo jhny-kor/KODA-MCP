@@ -41,6 +41,11 @@ MAX_REQUEST_BYTES = 5 * 1024 * 1024
 MAX_RESULT_BYTES = 2 * 1024 * 1024
 MAX_CRITERIA_PER_RULE = 5
 MAX_SNIPPET_CHARS = 500
+# Several copied line rules scan a line once per starting offset, so their cost
+# grows with the square or cube of the line length: one 219 KB generated line
+# costs over nine minutes and burns the whole scan budget. Hand-written source
+# stays far below this, generated and minified files are far above it.
+MAX_ANALYZED_LINE_BYTES = 2000
 DEFAULT_STANDARD_ID: StandardId = "sw-dev-security-49"
 SCAN_TIMEOUT_SECONDS = 60.0
 TEMP_ROOT_BASE = Path("/tmp/koda-mcp")
@@ -62,6 +67,7 @@ _COVERAGE_GAPS = [
     "formal_compliance_not_evaluated",
     "file_selection_agent_controlled",
 ]
+_GENERATED_FILE_GAP = "generated_or_minified_files_not_evaluated"
 _SEVERITY_RANK = {severity: index for index, severity in enumerate(models.SEVERITIES)}
 
 # ponytail: global lock, per-account workers only if one-at-a-time becomes a measured bottleneck.
@@ -302,6 +308,18 @@ def _validate_files(request: ChangedFilesRequest) -> list[_ValidatedFile]:
     return validated
 
 
+def _is_generated_or_minified(content: bytes) -> bool:
+    """Return whether any single line is too long to analyze in bounded time."""
+    start = 0
+    while True:
+        end = content.find(b"\n", start)
+        if end < 0:
+            return len(content) - start > MAX_ANALYZED_LINE_BYTES
+        if end - start > MAX_ANALYZED_LINE_BYTES:
+            return True
+        start = end + 1
+
+
 def _ensure_temp_root() -> Path:
     base = TEMP_ROOT_BASE
     if base.is_symlink():
@@ -451,6 +469,7 @@ def _scan_worker(
     temp_root_value: str,
     result_path_value: str,
     selected_standard: StandardId = DEFAULT_STANDARD_ID,
+    unanalyzed_paths: tuple[str, ...] = (),
 ) -> None:
     root = Path(temp_root_value)
     result_path = Path(result_path_value)
@@ -468,8 +487,13 @@ def _scan_worker(
             if path.is_file() and path != result_path
         )
         input_paths = {path.relative_to(root).as_posix() for path in files}
+        unanalyzed = set(unanalyzed_paths)
         raw_findings: list[models.Finding] = []
         for path in files:
+            # Written to the tree but not scanned: sibling-file checks still see
+            # it, while no line rule is handed a line it cannot bound.
+            if path.relative_to(root).as_posix() in unanalyzed:
+                continue
             for _category, checker in CHECKS:
                 raw_findings.extend(checker(path, target))
         findings = [
@@ -625,12 +649,15 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
     response: ScanResponse
     try:
         try:
+            unanalyzed = tuple(
+                item.path for item in files if _is_generated_or_minified(item.content)
+            )
             root = _write_request_files(files, request_id)
             result_path = root / f".result-{uuid.uuid4().hex}.json"
             context = multiprocessing.get_context("spawn")
             process = context.Process(
                 target=_scan_worker,
-                args=(str(root), str(result_path), request.standard),
+                args=(str(root), str(result_path), request.standard, unanalyzed),
             )
             process.start()
             await asyncio.to_thread(process.join, SCAN_TIMEOUT_SECONDS)
@@ -676,6 +703,8 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
                     gaps = list(_COVERAGE_GAPS)
                     if any(Path(item.path).name == "package.json" for item in files):
                         gaps.append("dependency_lockfile_presence_not_evaluated")
+                    if unanalyzed:
+                        gaps.append(_GENERATED_FILE_GAP)
                     if findings_truncated:
                         gaps.append("findings_truncated")
                     response = _response(

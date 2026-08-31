@@ -7,3 +7,5 @@ dist/
 build/
 *.egg-info/
 config/koda_mcp.json
+.DS_Store
+.omc/

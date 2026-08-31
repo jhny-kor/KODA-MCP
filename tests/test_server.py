@@ -9,10 +9,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 from typing import Any
 
 from mcp.client import Client
 
+from koda_mcp import scan_service
+
+import koda_mcp.server as server_module
 from koda_mcp.server import (
     AuthConfig,
     TokenRecord,
@@ -285,6 +289,56 @@ class ServerTests(unittest.TestCase):
         self.assertIn("<redacted>", response_body)
         self.assertNotIn("traceback", response_body.casefold())
 
+    def _guidance_log_record(self) -> dict[str, Any]:
+        app = create_app(self.config_path)
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "koda_get_security_guidance",
+                    "arguments": {"task_summary": "sql query review"},
+                },
+            }
+        ).encode("utf-8")
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            asyncio.run(
+                self._call_with_lifespan(
+                    app,
+                    self._scope(
+                        "POST",
+                        "/mcp",
+                        [
+                            (b"host", b"koda-mcp.internal.example"),
+                            (b"authorization", f"Bearer {self.token}".encode("ascii")),
+                            (b"origin", b"https://openwebui.internal.example"),
+                            (b"content-type", b"application/json"),
+                            (b"accept", b"application/json, text/event-stream"),
+                        ],
+                    ),
+                    body,
+                )
+            )
+        return json.loads(stream.getvalue().strip().splitlines()[-1])
+
+    def test_request_log_records_a_fully_captured_response(self) -> None:
+        record = self._guidance_log_record()
+        self.assertFalse(record["response_body_truncated"])
+        self.assertEqual("completed", record["execution_status"])
+
+    def test_request_log_marks_a_response_it_could_not_capture(self) -> None:
+        # The audit fields are recovered by re-parsing the response body, so a
+        # response larger than the capture buffer must say so instead of
+        # silently logging defaults.
+        with mock.patch.object(server_module, "MAX_LOGGED_RESPONSE_BYTES", 16):
+            record = self._guidance_log_record()
+        self.assertTrue(record["response_body_truncated"])
+
+    def test_capture_buffer_covers_the_largest_possible_result(self) -> None:
+        self.assertGreaterEqual(server_module.MAX_LOGGED_RESPONSE_BYTES, scan_service.MAX_RESULT_BYTES)
+
     def test_tools_have_exact_contract_and_in_memory_guidance_works(self) -> None:
         server = _build_mcp_server()
         tools = asyncio.run(server.list_tools())
@@ -450,7 +504,7 @@ class ServerTests(unittest.TestCase):
         compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
         dockerfile = (ROOT / "deploy" / "Dockerfile").read_text(encoding="utf-8")
         nginx = (ROOT / "deploy" / "nginx-mcp.conf.example").read_text(encoding="utf-8")
-        readme = (ROOT / "README.ko.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         for expected in (
             'platform: linux/amd64',
             'user: "10001:10001"',

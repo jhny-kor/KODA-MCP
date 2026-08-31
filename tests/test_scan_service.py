@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -131,6 +132,46 @@ class ScanServiceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertNotIn("sentinel", result.stderr)
+
+    def test_generated_file_is_skipped_without_stalling_the_scan(self) -> None:
+        # Several copied line rules are superlinear in line length, so one long
+        # generated line used to consume the entire scan budget.
+        unit = 'o.cookie="s"+p;h.password=t;m.exec(q);r=Math.random();'
+        generated = unit * (65536 // len(unit)) + "\n"
+        self.assertGreater(len(generated), 60000)
+        started = time.monotonic()
+        result = self._scan(
+            ("vendor/bundle.min.js", generated),
+            ("app/run.py", 'subprocess.run(request.args["cmd"], shell=True)\n'),
+        )
+        self.assertLess(time.monotonic() - started, 10.0)
+        self.assertEqual("completed", result.execution_status)
+        self.assertEqual(2, result.received_file_count)
+        self.assertIn(scan_service._GENERATED_FILE_GAP, result.coverage_gaps)
+        self.assertEqual({"app/run.py"}, {finding.path for finding in result.findings})
+
+    def test_ordinary_files_are_analyzed_and_declare_no_generated_gap(self) -> None:
+        result = self._scan(("app/run.py", 'subprocess.run(request.args["cmd"], shell=True)\n'))
+        self.assertNotIn(scan_service._GENERATED_FILE_GAP, result.coverage_gaps)
+        self.assertIn("code.command-injection", {finding.rule_id for finding in result.findings})
+
+    def test_unanalyzed_file_is_still_present_for_sibling_file_checks(self) -> None:
+        # A skipped file is written to the request tree, so the lockfile that
+        # suppresses dependency.node-missing-lockfile is still found on disk.
+        lockfile = '{"name":"demo","lockfileVersion":3,"packages":{' + ",".join(
+            f'"node_modules/p{index}":{{"version":"1.0.0"}}' for index in range(400)
+        ) + "}}"
+        self.assertGreater(len(lockfile), scan_service.MAX_ANALYZED_LINE_BYTES)
+        result = self._scan(
+            ("package.json", '{"dependencies":{"demo":"1.0.0"}}'),
+            ("package-lock.json", lockfile),
+        )
+        self.assertEqual("completed", result.execution_status)
+        self.assertIn(scan_service._GENERATED_FILE_GAP, result.coverage_gaps)
+        self.assertNotIn(
+            "dependency.node-missing-lockfile",
+            {finding.rule_id for finding in result.findings},
+        )
 
     def test_rejects_path_duplicates_and_file_types(self) -> None:
         cases = (

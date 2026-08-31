@@ -19,11 +19,15 @@ from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .contracts import ChangedFile, ChangedFilesRequest, GuidanceRequest, GuidanceResponse, ScanResponse, StandardId
-from .scan_service import get_security_guidance, scan_changed_files
+from .scan_service import MAX_RESULT_BYTES, get_security_guidance, scan_changed_files
 
 
 DEFAULT_CONFIG_PATH = Path("/run/secrets/koda_mcp.json")
 MAX_CONFIG_BYTES = 64 * 1024
+# The audit record is parsed back out of the response body, so the capture has
+# to outrun the largest response the scanner can produce: a full worker result
+# plus the JSON-RPC envelope and standards references wrapped around it.
+MAX_LOGGED_RESPONSE_BYTES = 2 * MAX_RESULT_BYTES
 _TOKEN_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -208,6 +212,7 @@ def _log_request(
     severity_counts: Counter[str],
     duration_ms: int,
     cleanup_status: str,
+    response_body_truncated: bool,
 ) -> None:
     print(
         json.dumps(
@@ -221,6 +226,9 @@ def _log_request(
                 "finding_severity_counts": dict(sorted(severity_counts.items())),
                 "duration_ms": duration_ms,
                 "cleanup_status": cleanup_status,
+                # True means the fields above were recovered from the HTTP status
+                # alone, because the response outgrew the capture buffer.
+                "response_body_truncated": response_body_truncated,
             },
             ensure_ascii=False,
             separators=(",", ":"),
@@ -234,6 +242,7 @@ class _ResponseTracker:
         self._send = send
         self.status = 500
         self.body = bytearray()
+        self.truncated = False
 
     async def __call__(self, message: dict[str, Any]) -> None:
         if message.get("type") == "http.response.start":
@@ -241,7 +250,9 @@ class _ResponseTracker:
         elif message.get("type") == "http.response.body":
             chunk = message.get("body", b"")
             if isinstance(chunk, bytes):
-                remaining = 1024 * 1024 - len(self.body)
+                remaining = MAX_LOGGED_RESPONSE_BYTES - len(self.body)
+                if chunk and len(chunk) > remaining:
+                    self.truncated = True
                 if remaining > 0:
                     self.body.extend(chunk[:remaining])
         await self._send(message)
@@ -348,6 +359,7 @@ class _AuthenticatedApp:
                 severity_counts=severity_counts,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 cleanup_status=cleanup_status,
+                response_body_truncated=tracker.truncated,
             )
             request_body.clear()
             tracker.body.clear()

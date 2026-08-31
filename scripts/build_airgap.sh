@@ -29,6 +29,8 @@ mkdir -p "$context_dir/deploy" "$context_dir/wheelhouse" "$bundle_dir/image" "$b
 
 cp "$repo_root/pyproject.toml" "$repo_root/LICENSE" "$repo_root/NOTICE" "$repo_root/requirements-linux-amd64-py312.lock" "$context_dir/"
 cp -R "$repo_root/src" "$context_dir/src"
+# Editor and interpreter droppings must not reach the image.
+find "$context_dir/src" \( -name .DS_Store -o -name __pycache__ \) -exec rm -rf {} +
 cp "$repo_root/deploy/Dockerfile" "$context_dir/deploy/Dockerfile"
 cp -R "$wheelhouse_dir"/. "$context_dir/wheelhouse/"
 

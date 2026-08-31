@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "koda-mcp-security"
 version = "0.1.0"
 description = "Closed-network advisory MCP for changed-file security review"
-readme = "README.ko.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
