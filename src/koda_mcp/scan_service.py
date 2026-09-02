@@ -32,8 +32,17 @@ from .standard_catalog_data import RULE_STANDARD_MAPPINGS, STANDARD_ORDER, STAND
 
 MCP_SERVER_VERSION = "0.1.0"
 MCP_SDK_VERSION = "2.0.0"
-KODA_SOURCE_COMMIT = "b2987c1211e745aa9dc99db94e0ad7eb73cc11e4"
-KODA_SOURCE_TREE_SHA256 = "adbf09b9f24cd14e01472b4878150dd86a36bfc7261b130fd4017cd955ac5376"
+# src/koda_core is no longer a verbatim copy of the upstream commit. It carries
+# local changes to code_patterns.py: the persistent-cookie rule is anchored so
+# it cannot backtrack cubically, the Java null scan prefilters tracked names
+# before building a regex, null state resets at method boundaries, and .mjs,
+# .cjs and .htm analyze as their primary extension. The "-modified" suffix says
+# so, in the same spirit as `git describe --dirty`.
+KODA_SOURCE_COMMIT = "b2987c1211e745aa9dc99db94e0ad7eb73cc11e4-modified"
+# sha256 over "<repo-relative path>\0<file sha256>\n" for every file under
+# src/koda_core, sorted by path, excluding __pycache__ and .pyc. Recompute with
+# scripts/koda_core_tree_sha256.py after changing anything under src/koda_core.
+KODA_SOURCE_TREE_SHA256 = "c119a922f006d8821185646a1d186244fde62f54b27c7b038b2cd743f6d96b78"
 
 MAX_FILES = 20
 MAX_FILE_BYTES = 512 * 1024

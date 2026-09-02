@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -132,6 +133,27 @@ class ScanServiceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertNotIn("sentinel", result.stderr)
+
+    def test_engine_tree_hash_identifies_the_shipped_core(self) -> None:
+        # Every scan response reports this hash as the identity of the code that
+        # produced the findings, so a change under src/koda_core that forgets to
+        # update the constant would make the engine metadata lie.
+        root = Path(__file__).resolve().parents[1]
+        digest = hashlib.sha256()
+        files = sorted(
+            path
+            for path in (root / "src" / "koda_core").rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+        )
+        self.assertTrue(files)
+        for path in files:
+            file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            digest.update(f"{path.relative_to(root).as_posix()}\0{file_hash}\n".encode())
+        self.assertEqual(
+            digest.hexdigest(),
+            scan_service.KODA_SOURCE_TREE_SHA256,
+            "src/koda_core changed; rerun scripts/koda_core_tree_sha256.py and update the constant",
+        )
 
     def test_generated_file_is_skipped_without_stalling_the_scan(self) -> None:
         # Several copied line rules are superlinear in line length, so one long

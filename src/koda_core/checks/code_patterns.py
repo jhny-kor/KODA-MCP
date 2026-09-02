@@ -371,8 +371,12 @@ CODE_PATTERN_RULES = (
         "code.persistent-sensitive-cookie",
         "Sensitive value stored in a persistent cookie",
         "medium",
+        # Anchored: the three lookaheads scan the whole line from wherever the
+        # match starts, so a hit at any offset is also a hit at offset 0. An
+        # unanchored search retries all three at every position instead, which
+        # is cubic on one long generated or minified line.
         re.compile(
-            rf"(?=.*\b(?:cookie|set-cookie)\b)(?=.*{COOKIE_SENSITIVE_NAME})"
+            rf"^(?=.*\b(?:cookie|set-cookie)\b)(?=.*{COOKIE_SENSITIVE_NAME})"
             r"(?=.*\b(?:max[_-]?age|expires?)\b).+",
             re.IGNORECASE,
         ),
@@ -775,6 +779,7 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
     Arbitrary method returns are deliberately not inferred.
     """
     rule = _RULE_BY_ID["code.null-pointer-dereference"]
+    suffix = _analysis_suffix(path)
     definitely_null: set[str] = set()
     possibly_null: set[str] = set()
     nullable_receivers: set[str] = set()
@@ -788,6 +793,17 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
         stripped = line.strip()
         if not stripped:
             continue
+
+        # Null state describes local variables, which do not exist outside the
+        # method that declares them. Carrying a name across a method boundary
+        # judges the next same-named local by the previous method's assignment.
+        # ``nullable_receivers`` is deliberately not cleared: a Map declaration
+        # is just as often a field, and that one is valid for every method.
+        if _starts_function_scope(stripped, suffix):
+            definitely_null.clear()
+            possibly_null.clear()
+            nonnull_scopes.clear()
+            nonnull_next_statement.clear()
 
         nonnull_next_statement = {
             name: statement_index
@@ -836,7 +852,9 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
             possibly_null.discard(name)
             continue
 
-        for name in sorted(definitely_null | possibly_null):
+        # A tracked name can only match when it appears literally; the plain
+        # substring test drops the per-name regex build for every other name.
+        for name in sorted(name for name in definitely_null | possibly_null if name in stripped):
             if not re.search(rf"\b{re.escape(name)}\s*\.(?!\s*class\b)", stripped):
                 continue
             if (
@@ -875,6 +893,7 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
         typed_map_chain = any(
             re.search(rf"\b{re.escape(receiver)}\s*\.\s*get\s*\([^;]*?\)\s*\.\s*[A-Za-z_$]", stripped)
             for receiver in nullable_receivers
+            if receiver in stripped
         )
         if (_JAVA_KNOWN_NULLABLE_CALL.search(stripped) or typed_map_chain) and re.search(r"\)\s*\.\s*[A-Za-z_$]", stripped):
             if not _JAVA_NULL_SAFE_CHAIN.search(stripped):
@@ -904,6 +923,7 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
             typed_map_lookup = any(
                 re.search(rf"\b{re.escape(receiver)}\s*\.\s*get\s*\(", expression)
                 for receiver in nullable_receivers
+                if receiver in expression
             )
             if normalized_expression == "null" or normalized_expression in definitely_null:
                 definitely_null.add(name)
@@ -1170,6 +1190,17 @@ def _java_xml_factory_is_hardened(factory: str, configuration_lines: list[str]) 
         return True
 
     return False
+
+
+# Same language, different file extension. Analysis keys off the canonical
+# suffix so an alias never silently skips comment stripping, function-scope
+# detection, or rule selection.
+_SUFFIX_ALIASES = {".mjs": ".js", ".cjs": ".js", ".htm": ".html"}
+
+
+def _analysis_suffix(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return _SUFFIX_ALIASES.get(suffix, suffix)
 
 
 _RULE_BY_ID = {rule.rule_id: rule for rule in CODE_PATTERN_RULES}
@@ -1660,7 +1691,7 @@ def _contextual_dataflow_findings(path: Path, lines: list[str], code_lines: list
     a review candidate instead of being promoted to a violation.
     """
     findings: list[Finding] = []
-    suffix = path.suffix.lower()
+    suffix = _analysis_suffix(path)
     tainted: set[str] = set()
     sanitized: set[str] = set()
     safe_prepared_statements: set[str] = set()
@@ -1847,7 +1878,7 @@ def _jsp_xss_findings(path: Path, lines: list[str], code_lines: list[str]) -> li
 
 
 def _sw49_semantic_findings(path: Path, lines: list[str], statements: list[str]) -> list[Finding]:
-    suffix = path.suffix.lower()
+    suffix = _analysis_suffix(path)
     out: list[Finding] = []
     def add(rule_id: str, i: int, note: str) -> None:
         rule = _RULE_BY_ID[rule_id]
@@ -2257,7 +2288,7 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
         if versioned_library_file or (named_library_file and (is_dependency_path or has_library_banner)):
             return []
 
-    suffix = path.suffix.lower()
+    suffix = _analysis_suffix(path)
     # Every rule below reads the whole-file code view, not the raw line, so a
     # single line is never judged out of its file context.
     code_lines = _code_view(lines, suffix)
