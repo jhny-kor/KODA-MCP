@@ -1,12 +1,19 @@
 # 폐쇄망 배포
 
-연결망 빌드 PC에서 `WHEELHOUSE_DIR`에 Linux amd64/Python 3.12 wheel만 준비하고 다음을 실행합니다.
+연결망 빌드 PC에서 `WHEELHOUSE_DIR`에 Linux amd64/Python 3.12 wheel만 준비하고 다음을 실행합니다. wheel은 lock 파일의 해시와 대조하며 받습니다.
+
+```bash
+pip download --require-hashes -r requirements-linux-amd64-py312.lock \
+  --dest wheelhouse --only-binary=:all: \
+  --platform manylinux2014_x86_64 --platform any \
+  --python-version 3.12 --implementation cp
+```
 
 ```bash
 WHEELHOUSE_DIR=/path/to/wheelhouse scripts/build_airgap.sh dist
 ```
 
-스크립트는 외부 네트워크 없이 Docker build를 수행하고 image tar, compose/Nginx/config example, provenance, lock, license 고지와 SHA-256 목록을 하나의 tar.gz로 만듭니다. 실제 token, token digest, TLS private key는 산출물에 넣지 않습니다.
+스크립트는 외부 네트워크 없이 Docker build를 수행하고 image tar, compose/Nginx/config example, lock, wheel 해시 목록, SBOM, license 고지와 전체 파일 SHA-256 목록을 하나의 tar.gz로 만듭니다. 실제 token, token digest, TLS private key는 산출물에 넣지 않습니다.
 
 전송 전 연결망 빌드 PC에서 bundle verifier를 실행합니다. 생성된 tar.gz는 로컬 배포 산출물이며 소스 저장소에는 커밋하지 않습니다.
 

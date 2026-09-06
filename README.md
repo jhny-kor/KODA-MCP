@@ -14,37 +14,53 @@
 
 ## Quick Start
 
-폐쇄망 배포 기준입니다. Docker와 `linux/amd64` 실행 환경이 필요합니다.
+경로가 두 가지입니다. 인터넷이 되는 환경이면 **A**, 폐쇄망이면 **B**를 따릅니다. 어느 쪽이든 서버는 기동 후 인터넷 없이 동작하며 컨테이너는 외부로 나가지 않습니다.
 
-**1. 토큰 발급.** raw token은 클라이언트에만 두고, 서버 설정에는 SHA-256 digest만 넣습니다.
+### 공통 준비: 토큰과 설정 파일
+
+**토큰 발급.** raw token은 클라이언트에만 두고, 서버 설정에는 SHA-256 digest만 넣습니다.
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 printf '%s' '<raw-token>' | sha256sum
 ```
 
-**2. 설정 파일 작성.** `deploy/koda_mcp.example.json`을 복사해 digest와 FQDN을 채웁니다. `allowed_origins`는 정확한 HTTPS origin이어야 하며 와일드카드를 허용하지 않습니다.
+**설정 파일.** `deploy/koda_mcp.example.json`을 복사해 digest, FQDN, origin을 채웁니다. `allowed_origins`는 정확한 HTTPS origin이어야 하며 와일드카드를 허용하지 않습니다.
 
-**3. 파일 소유권과 권한.** 서버는 설정 파일이 실행 UID 소유의 mode `0400` regular file일 때만 기동합니다. 컨테이너는 UID `10001`로 실행되므로 소유자를 맞춰야 합니다.
+**소유권과 권한.** 서버는 설정 파일이 실행 UID 소유의 mode `0400` regular file일 때만 기동합니다. 컨테이너는 UID `10001`로 실행되므로 소유자를 맞춰야 합니다. 이 조건이 어긋나면 기동이 실패합니다.
 
 ```bash
 sudo chown 10001:10001 /run/secrets/koda_mcp.json
 sudo chmod 0400 /run/secrets/koda_mcp.json
 ```
 
-**4. 이미지 빌드.** 연결망에서 wheelhouse를 채운 뒤 오프라인으로 굽습니다. 에어갭 번들까지 만들려면 `scripts/build_airgap.sh`를 사용합니다.
+### A. 일반 환경 (인터넷 연결)
+
+이미지는 lock 파일에 고정된 wheel로만 설치하며, `wheelhouse/`는 저장소에 포함되지 않습니다. 빌드 전에 먼저 채워야 합니다.
+
+**1. 의존성 내려받기.** lock 파일의 해시와 대조하며 Linux amd64/Python 3.12용 wheel만 받습니다.
 
 ```bash
-docker build --network=none --platform linux/amd64 -f deploy/Dockerfile -t koda-mcp-security:0.1.0 .
+pip download --require-hashes -r requirements-linux-amd64-py312.lock \
+  --dest wheelhouse --only-binary=:all: \
+  --platform manylinux2014_x86_64 --platform any \
+  --python-version 3.12 --implementation cp
 ```
 
-**5. 기동.**
+**2. 이미지 빌드.** 빌드는 `--network=none`으로 외부 접근 없이 수행됩니다. 베이스 이미지는 digest로 고정되어 있어 최초 1회만 받습니다.
+
+```bash
+docker build --network=none --platform linux/amd64 \
+  -f deploy/Dockerfile -t koda-mcp-security:0.1.0 .
+```
+
+**3. 기동.**
 
 ```bash
 KODA_MCP_CONFIG_PATH=/run/secrets/koda_mcp.json docker compose -f deploy/compose.yaml up -d
 ```
 
-**6. 확인.** `/healthz`는 컨테이너 내부 확인용이며 Nginx에서 외부로 공개하지 않습니다. `Host`는 설정의 `public_host`와, `Origin`은 `allowed_origins`의 값과 정확히 일치해야 합니다.
+**4. 확인.** `/healthz`는 컨테이너 내부 확인용이며 Nginx에서 외부로 공개하지 않습니다. `Host`는 설정의 `public_host`와, `Origin`은 `allowed_origins`의 값과 정확히 일치해야 합니다.
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8766/healthz
@@ -58,9 +74,50 @@ curl -s -X POST http://127.0.0.1:8766/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"koda_scan_changed_files","arguments":{"files":[{"path":"a.py","content":"import subprocess\nsubprocess.run(request.args[\"cmd\"], shell=True)\n"}]}}}'
 ```
 
-인증 없이 호출하면 `401`, `Host`가 다르면 `421`, 등록되지 않은 `Origin`이면 `403`이 반환됩니다.
+| 상황 | 응답 |
+| --- | --- |
+| `/healthz` | `200` |
+| 토큰 없음 또는 불일치 | `401` |
+| `Host`가 `public_host`와 다름 | `421` |
+| `Origin`이 `allowed_origins`에 없음 | `403` |
+| 정상 스캔 | `200` + `execution_status: completed` |
 
-**7. 클라이언트 연결.** 아래 [Continue 기본 구성](#continue-기본-구성)을 참고합니다.
+### B. 폐쇄망
+
+폐쇄망 서버는 저장소도 이미지 레지스트리도 접근할 수 없으므로 빌드가 불가능합니다. **연결망 PC에서 하나의 `tar.gz`로 묶어 매체로 옮깁니다.**
+
+**1. 연결망 PC에서 번들 생성.** 먼저 A의 1단계로 wheelhouse를 채운 뒤 실행합니다.
+
+```bash
+WHEELHOUSE_DIR=/path/to/wheelhouse scripts/build_airgap.sh dist
+```
+
+번들에는 image tar, compose와 Nginx 예시, 설정 예시, lock 파일, `WHEELS.sha256`, SBOM, 라이선스 고지, 전체 파일의 `SHA256SUMS`가 들어갑니다. **실제 token, token digest, TLS 개인키는 넣지 않습니다.**
+
+**2. 이송 전 검증.** 연결망 PC에서 번들을 풀어 체크섬, 이미지 아키텍처와 실행 UID, compose 문법을 확인합니다. Docker가 있으면 `--internal` 네트워크에서 컨테이너가 외부로 나가지 못하는 것까지 확인합니다.
+
+```bash
+scripts/verify_airgap.sh dist/koda-mcp-security-0.1.0-linux-amd64.tar.gz
+```
+
+**3. 매체로 이송.** 승인된 매체로 `tar.gz` 하나만 옮깁니다. 저장소를 복제할 필요가 없습니다.
+
+**4. 폐쇄망 서버에서 적재.** 체크섬을 다시 확인한 뒤 이미지를 load합니다.
+
+```bash
+tar -xzf koda-mcp-security-0.1.0-linux-amd64.tar.gz
+cd koda-mcp-security-0.1.0-linux-amd64
+sha256sum -c metadata/SHA256SUMS
+docker load -i image/koda-mcp-security-0.1.0-amd64.tar
+```
+
+**5. 기동과 확인.** 공통 준비의 설정 파일을 배치한 뒤 A의 3·4단계와 동일합니다. compose 파일은 번들의 `deploy/compose.yaml`을 사용합니다.
+
+절차와 운영상의 주의는 [`deploy/README-airgap.ko.md`](deploy/README-airgap.ko.md)에 더 자세히 있습니다.
+
+### 클라이언트 연결
+
+아래 [Continue 기본 구성](#continue-기본-구성)을 참고합니다.
 
 ## 로컬 확인
 
