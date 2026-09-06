@@ -1213,6 +1213,12 @@ _LINE_RULES = {
     for extension in CODE_EXTENSIONS | CODE_FILENAMES
 }
 _COOKIE_MARKER = re.compile(r"cookie", re.IGNORECASE)
+# The password-hash rule pairs a credential word with a hash API across the
+# rest of the line, so it rescans to end of line at every credential it finds.
+# Every branch of that pattern requires one of these literals, so a line
+# without them cannot match, and skipping it drops the quadratic case that a
+# generated line full of credential words would otherwise hit.
+_PASSWORD_HASH_MARKER = re.compile(r"hashlib|createHash|MessageDigest|DigestUtils", re.IGNORECASE)
 _ASSIGNMENT = re.compile(
     r"^\s*(?:(?:const|let|var|final)\s+)?"
     r"(?:(?:[A-Za-z_$][\w$<>\[\].,?]*\s+))?"
@@ -2314,6 +2320,8 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
             continue
         for rule in line_rules:
             if rule.rule_id == "code.persistent-sensitive-cookie" and not _COOKIE_MARKER.search(line):
+                continue
+            if rule.rule_id == "code.password-hash-without-salt" and not _PASSWORD_HASH_MARKER.search(line):
                 continue
             if (
                 rule.rule_id == "code.xml-external-entity"

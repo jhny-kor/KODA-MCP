@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 import koda_mcp.scan_service as scan_service
 from koda_core import models
+from koda_mcp import _worker
 from koda_mcp.contracts import ChangedFile, ChangedFilesRequest, GuidanceRequest
 
 
@@ -24,7 +25,7 @@ def _raise_checker(_path, _target):
 
 
 def _run_failing_worker(root: str, result_path: str) -> None:
-    scan_service.CHECKS = (("code", _raise_checker),)
+    _worker.CHECKS = (("code", _raise_checker),)
     scan_service._scan_worker(root, result_path)
 
 
@@ -133,6 +134,26 @@ class ScanServiceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertNotIn("sentinel", result.stderr)
+
+    def test_worker_module_does_not_import_pydantic(self) -> None:
+        # The worker is the spawn target, so whatever it imports is paid again on
+        # every request. Importing .contracts here would put pydantic back on
+        # that path and roughly double the fixed cost of a scan.
+        probe = (
+            "import sys; sys.path.insert(0, 'src');"
+            "import koda_mcp._worker;"
+            "print(sorted({m.split('.')[0] for m in sys.modules} "
+            "& {'pydantic', 'pydantic_core', 'mcp', 'annotated_types'}))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("[]", result.stdout.strip())
 
     def test_engine_tree_hash_identifies_the_shipped_core(self) -> None:
         # Every scan response reports this hash as the identity of the code that
@@ -284,7 +305,7 @@ class ScanServiceTests(unittest.TestCase):
                     for rule_id in ("code.sql-dynamic-query", "code.api-mass-assignment", "code.unmapped-sentinel")
                 ]
 
-            with mock.patch.object(scan_service, "CHECKS", (("code", checker),)):
+            with mock.patch.object(_worker, "CHECKS", (("code", checker),)):
                 scan_service._scan_worker(str(root), str(result_path), standard)
             return json.loads(result_path.read_text(encoding="utf-8"))["findings"]
 
@@ -306,7 +327,7 @@ class ScanServiceTests(unittest.TestCase):
             {"code.sql-dynamic-query", "code.api-mass-assignment", "code.unmapped-sentinel"},
         )
         sql = next(item for item in all_findings if item["rule_id"] == "code.sql-dynamic-query")
-        self.assertEqual(sql["criteria"], list(scan_service.RULE_STANDARD_MAPPINGS["code.sql-dynamic-query"]))
+        self.assertEqual(sql["criteria"], list(_worker.RULE_STANDARD_MAPPINGS["code.sql-dynamic-query"]))
         self.assertFalse(sql["criteria_truncated"])
         self.assertEqual(
             [item["standard_id"] for item in scan_service._standard_references_for_rules(set(), "all")],
@@ -320,7 +341,7 @@ class ScanServiceTests(unittest.TestCase):
     def test_standard_criteria_stay_within_worker_result_limit(self) -> None:
         worst = 0
         for standard in ("sw-dev-security-49", "all"):
-            for rule_id in scan_service.RULE_STANDARD_MAPPINGS:
+            for rule_id in _worker.RULE_STANDARD_MAPPINGS:
                 criteria, truncated = scan_service._criteria_for_rule(rule_id, standard)
                 item = {
                     "rule_id": rule_id,
@@ -425,7 +446,7 @@ class ScanServiceTests(unittest.TestCase):
                 for index in range(205)
             ]
 
-        with mock.patch.object(scan_service, "CHECKS", (("code", bulk_checker),)):
+        with mock.patch.object(_worker, "CHECKS", (("code", bulk_checker),)):
             scan_service._scan_worker(str(root), str(result_path))
         payload = json.loads(result_path.read_text(encoding="utf-8"))
         rendered = json.dumps(payload)
@@ -435,7 +456,7 @@ class ScanServiceTests(unittest.TestCase):
         self.assertNotIn("untrusted-evidence-must-not-be-used", rendered)
         self.assertEqual(
             payload["findings"],
-            sorted(payload["findings"], key=scan_service._finding_sort_key),
+            sorted(payload["findings"], key=_worker._finding_sort_key),
         )
         self.assertTrue(all(set(item) == {
             "rule_id", "severity", "verification_status", "title", "path", "line", "recommendation",

@@ -14,8 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from koda_core import models
-from koda_core.checks import code_patterns, common, configuration, dependencies, secrets
+from koda_core.checks import code_patterns, secrets
 
 from .contracts import (
     ChangedFilesRequest,
@@ -27,7 +26,16 @@ from .contracts import (
     ScanResponse,
     StandardId,
 )
-from .standard_catalog_data import RULE_STANDARD_MAPPINGS, STANDARD_ORDER, STANDARD_REFERENCES
+from ._worker import (
+    MAX_FILE_BYTES,
+    MAX_RESULT_BYTES,
+    _criteria_for_rule,
+    _rule_matches_standard,
+    _RULE_ID,
+    _scan_worker,
+    _SEVERITY_RANK,
+)
+from .standard_catalog_data import STANDARD_ORDER, STANDARD_REFERENCES
 
 
 MCP_SERVER_VERSION = "0.1.0"
@@ -36,30 +44,25 @@ MCP_SDK_VERSION = "2.0.0"
 # local changes to code_patterns.py: the persistent-cookie rule is anchored so
 # it cannot backtrack cubically, the Java null scan prefilters tracked names
 # before building a regex, null state resets at method boundaries, and .mjs,
-# .cjs and .htm analyze as their primary extension. The "-modified" suffix says
+# .cjs and .htm analyze as their primary extension, and the password-hash rule
+# is skipped on lines with no hash-API literal. The "-modified" suffix says
 # so, in the same spirit as `git describe --dirty`.
 KODA_SOURCE_COMMIT = "b2987c1211e745aa9dc99db94e0ad7eb73cc11e4-modified"
 # sha256 over "<repo-relative path>\0<file sha256>\n" for every file under
 # src/koda_core, sorted by path, excluding __pycache__ and .pyc. Recompute with
 # scripts/koda_core_tree_sha256.py after changing anything under src/koda_core.
-KODA_SOURCE_TREE_SHA256 = "c119a922f006d8821185646a1d186244fde62f54b27c7b038b2cd743f6d96b78"
+KODA_SOURCE_TREE_SHA256 = "b48baf15c3fddeb052fd70ce3329c24e22cc9f1042dd2a84e20915fcf0b2e2f4"
 
 MAX_FILES = 20
-MAX_FILE_BYTES = 512 * 1024
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
-MAX_RESULT_BYTES = 2 * 1024 * 1024
-MAX_CRITERIA_PER_RULE = 5
-MAX_SNIPPET_CHARS = 500
 # Several copied line rules scan a line once per starting offset, so their cost
 # grows with the square or cube of the line length: one 219 KB generated line
 # costs over nine minutes and burns the whole scan budget. Hand-written source
 # stays far below this, generated and minified files are far above it.
 MAX_ANALYZED_LINE_BYTES = 2000
-DEFAULT_STANDARD_ID: StandardId = "sw-dev-security-49"
 SCAN_TIMEOUT_SECONDS = 60.0
 TEMP_ROOT_BASE = Path("/tmp/koda-mcp")
 _PATH_RULE = re.compile(r"^[A-Za-z]:")
-_RULE_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _FORBIDDEN_EXTENSIONS = frozenset(
     ".zip .tar .gz .tgz .bz2 .xz .7z .rar .jar .war .ear .whl "
     ".exe .dll .so .dylib .o .obj .a .class .pyc .pyo .bin "
@@ -77,16 +80,9 @@ _COVERAGE_GAPS = [
     "file_selection_agent_controlled",
 ]
 _GENERATED_FILE_GAP = "generated_or_minified_files_not_evaluated"
-_SEVERITY_RANK = {severity: index for index, severity in enumerate(models.SEVERITIES)}
 
 # ponytail: global lock, per-account workers only if one-at-a-time becomes a measured bottleneck.
 SCAN_LOCK = threading.Lock()
-CHECKS = (
-    ("secrets", secrets.check_file),
-    ("dependencies", dependencies.check_file),
-    ("configuration", configuration.check_file),
-    ("code", code_patterns.check_file),
-)
 GUIDANCE_RULE_IDS = (
     "secret.generic-assignment",
     "code.auth-disabled-endpoint",
@@ -134,32 +130,8 @@ def _engine() -> ScanEngine:
     )
 
 
-def _criteria_for_rule(
-    rule_id: str,
-    selected_standard: StandardId = DEFAULT_STANDARD_ID,
-) -> tuple[list[dict[str, Any]], bool]:
-    mappings = RULE_STANDARD_MAPPINGS.get(rule_id, ())
-    if selected_standard == "all":
-        return [dict(item) for item in mappings], False
-    selected = [item for item in mappings if item["standard_id"] == selected_standard][:MAX_CRITERIA_PER_RULE]
-    represented = {item["standard_id"] for item in selected}
-    for item in mappings:
-        if len(selected) == MAX_CRITERIA_PER_RULE:
-            break
-        if item["standard_id"] not in represented:
-            selected.append(item)
-            represented.add(item["standard_id"])
-    if len(selected) < MAX_CRITERIA_PER_RULE:
-        selected.extend(
-            [item for item in mappings if item not in selected][: MAX_CRITERIA_PER_RULE - len(selected)]
-        )
-    return [dict(item) for item in selected], len(mappings) > len(selected)
 
 
-def _rule_matches_standard(rule_id: str, standard_id: StandardId) -> bool:
-    return standard_id == "all" or any(
-        item["standard_id"] == standard_id for item in RULE_STANDARD_MAPPINGS.get(rule_id, ())
-    )
 
 
 def _standard_references_for_rules(
@@ -209,13 +181,6 @@ def _response(
     )
 
 
-def _remove_control_characters(value: str, limit: int, default: str) -> str:
-    cleaned = "".join(
-        character
-        for character in value
-        if unicodedata.category(character) not in {"Cc", "Cf"}
-    )[:limit]
-    return cleaned or default
 
 
 def _rule_metadata(rule_id: str) -> tuple[str, str]:
@@ -371,165 +336,18 @@ def _write_request_files(files: list[_ValidatedFile], request_id: str) -> Path:
         raise
 
 
-def _write_worker_result(result_path: Path, payload: dict[str, Any]) -> None:
-    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    if len(encoded) > MAX_RESULT_BYTES:
-        payload = {"version": 1, "status": "error", "error_code": "result_invalid"}
-        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(result_path, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(encoded)
 
 
-def _mask_secret_match(match: re.Match[str], secret_group: int) -> str:
-    if secret_group == 0:
-        return "<redacted>"
-    start, end = match.span(secret_group)
-    if start < 0:
-        return "<redacted>"
-    relative_start = start - match.start()
-    relative_end = end - match.start()
-    value = match.group(0)
-    return f"{value[:relative_start]}<redacted>{value[relative_end:]}"
 
 
-def _redact_source_line(line: str) -> str:
-    redacted = line.replace("\t", "    ")
-    for rule in secrets.SECRET_RULES:
-        redacted = rule.pattern.sub(
-            lambda match, group=rule.secret_group: _mask_secret_match(match, group),
-            redacted,
-        )
-    cleaned = "".join(
-        character
-        for character in redacted
-        if unicodedata.category(character) not in {"Cc", "Cf"}
-    )
-    return cleaned if len(cleaned) <= MAX_SNIPPET_CHARS else f"{cleaned[:MAX_SNIPPET_CHARS - 3]}..."
 
 
-def _redacted_source_location(finding: models.Finding) -> tuple[int | None, int | None, str | None]:
-    if finding.line is None:
-        return None, None, None
-    lines = common.read_text_lines(finding.path, MAX_FILE_BYTES)
-    if lines is None or finding.line > len(lines):
-        raise ValueError("finding line escaped source")
-    return finding.line, finding.line, _redact_source_line(lines[finding.line - 1])
 
 
-def _safe_finding(
-    finding: models.Finding,
-    root: Path,
-    input_paths: set[str],
-    selected_standard: StandardId,
-) -> dict[str, Any]:
-    if not _RULE_ID.fullmatch(finding.rule_id):
-        raise ValueError("invalid rule id")
-    if finding.severity not in _SEVERITY_RANK:
-        raise ValueError("invalid severity")
-    if finding.verification_status not in models.VERIFICATION_STATUSES:
-        raise ValueError("invalid verification status")
-    if finding.line is not None and (isinstance(finding.line, bool) or finding.line < 1):
-        raise ValueError("invalid line")
-    try:
-        relative = finding.path.relative_to(root).as_posix()
-    except ValueError as exc:
-        raise ValueError("finding path escaped root") from exc
-    if relative not in input_paths:
-        raise ValueError("finding path was not provided")
-    start_line, end_line, redacted_snippet = _redacted_source_location(finding)
-    criteria, criteria_truncated = _criteria_for_rule(finding.rule_id, selected_standard)
-    return {
-        "rule_id": finding.rule_id,
-        "severity": finding.severity,
-        "verification_status": finding.verification_status,
-        "title": _remove_control_characters(finding.title, 200, "Security finding"),
-        "path": relative,
-        "line": finding.line,
-        "start_line": start_line,
-        "end_line": end_line,
-        "redacted_snippet": redacted_snippet,
-        "reason": _remove_control_characters(
-            finding.description,
-            500,
-            "The selected rule matched this source location; review the surrounding context.",
-        ),
-        "recommendation": _remove_control_characters(
-            finding.recommendation,
-            1000,
-            "Review this finding and apply a context-appropriate mitigation.",
-        ),
-        "criteria": criteria,
-        "criteria_truncated": criteria_truncated,
-    }
 
 
-def _finding_sort_key(finding: dict[str, Any]) -> tuple[int, str, str, int]:
-    return (
-        -_SEVERITY_RANK[finding["severity"]],
-        finding["rule_id"],
-        finding["path"],
-        finding["line"] or 0,
-    )
 
 
-def _scan_worker(
-    temp_root_value: str,
-    result_path_value: str,
-    selected_standard: StandardId = DEFAULT_STANDARD_ID,
-    unanalyzed_paths: tuple[str, ...] = (),
-) -> None:
-    root = Path(temp_root_value)
-    result_path = Path(result_path_value)
-    try:
-        common.clear_read_text_cache()
-        target = models.TargetConfig(
-            name="mcp-request",
-            path=root,
-            categories=("secrets", "dependencies", "configuration", "code"),
-            max_file_size_bytes=MAX_FILE_BYTES,
-        )
-        files = sorted(
-            path
-            for path in root.rglob("*")
-            if path.is_file() and path != result_path
-        )
-        input_paths = {path.relative_to(root).as_posix() for path in files}
-        unanalyzed = set(unanalyzed_paths)
-        raw_findings: list[models.Finding] = []
-        for path in files:
-            # Written to the tree but not scanned: sibling-file checks still see
-            # it, while no line rule is handed a line it cannot bound.
-            if path.relative_to(root).as_posix() in unanalyzed:
-                continue
-            for _category, checker in CHECKS:
-                raw_findings.extend(checker(path, target))
-        findings = [
-            _safe_finding(finding, root, input_paths, selected_standard)
-            for finding in raw_findings
-            if _rule_matches_standard(finding.rule_id, selected_standard)
-        ]
-        findings.sort(key=_finding_sort_key)
-        findings_truncated = len(findings) > 200
-        _write_worker_result(
-            result_path,
-            {
-                "version": 1,
-                "status": "ok",
-                "findings": findings[:200],
-                "findings_truncated": findings_truncated,
-            },
-        )
-    except BaseException:
-        try:
-            _write_worker_result(
-                result_path,
-                {"version": 1, "status": "error", "error_code": "scanner_error"},
-            )
-        except BaseException:
-            pass
-        raise SystemExit(1)
 
 
 def _read_worker_result(result_path: Path, input_paths: set[str]) -> tuple[list[ScanFinding], bool] | None:

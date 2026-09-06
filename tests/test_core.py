@@ -156,6 +156,28 @@ class CoreCheckTests(unittest.TestCase):
         self.assertIn("code.xss-dom-sink", html)
         self.assertEqual(html, htm)
 
+    def test_password_hash_rule_still_matches(self) -> None:
+        path = self._write("hash.py", "digest = hashlib.md5(password).hexdigest()\n")
+        self.assertIn(
+            "code.password-hash-without-salt",
+            {item.rule_id for item in code_patterns.check_file(path, self.target)},
+        )
+
+    def test_credential_words_without_a_hash_api_are_skipped_quickly(self) -> None:
+        # The password-hash rule rescans to end of line at every credential word,
+        # so a generated line full of them is quadratic. It cannot match without
+        # a hash-API literal, so those lines must not reach the pattern at all.
+        blob = "NOTES = " + ", ".join(
+            f'"c{index}: password pwd credential pin"' for index in range(1600)
+        ) + "\n"
+        path = self._write("credentials.py", blob)
+        started = time.monotonic()
+        findings = code_patterns.check_file(path, self.target)
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertNotIn(
+            "code.password-hash-without-salt", {item.rule_id for item in findings}
+        )
+
     def test_one_long_generated_line_scans_in_bounded_time(self) -> None:
         # A single generated or minified line is an ordinary input well under
         # the 512 KiB file limit, so rules must stay linear in line length.
