@@ -4,6 +4,64 @@
 
 이 서버는 클라이언트가 직접 전송한 변경·생성 텍스트 파일만 요청별 자식 프로세스에서 검사합니다. 개발자 PC 경로, Git diff, 저장소 전체, 런타임, OSV·Grype·SBOM, DAST, 인터넷, 형식적 준수 여부를 읽거나 판정하지 않습니다. 결과는 부분 자문이며 전체 프로젝트·런타임·형식적 준수를 평가하지 않습니다.
 
+## 요청 처리 흐름
+
+![KODA-MCP 요청 처리 흐름](docs/koda-mcp-flow.png)
+
+검사는 항상 요청마다 새로 만들어지는 별도 프로세스에서 수행되어 서버 본체를 보호합니다. 그 프로세스는 상주 템플릿에서 fork되며, 템플릿은 인증 설정을 읽기 전에 확보되므로 토큰이 워커로 넘어가지 않습니다. 인증 실패, 입력 한도 초과, 동시 요청, 시간 초과는 모두 작업을 차단하지 않는 `not_evaluated` 상태로 끝납니다.
+
+확대·검색·단계별 보기가 가능한 대화형 버전은 [`docs/koda-mcp-flow.html`](docs/koda-mcp-flow.html)이며, 원본 명세는 [`docs/koda-mcp-flow.workflow.json`](docs/koda-mcp-flow.workflow.json)입니다.
+
+## Quick Start
+
+폐쇄망 배포 기준입니다. Docker와 `linux/amd64` 실행 환경이 필요합니다.
+
+**1. 토큰 발급.** raw token은 클라이언트에만 두고, 서버 설정에는 SHA-256 digest만 넣습니다.
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+printf '%s' '<raw-token>' | sha256sum
+```
+
+**2. 설정 파일 작성.** `deploy/koda_mcp.example.json`을 복사해 digest와 FQDN을 채웁니다. `allowed_origins`는 정확한 HTTPS origin이어야 하며 와일드카드를 허용하지 않습니다.
+
+**3. 파일 소유권과 권한.** 서버는 설정 파일이 실행 UID 소유의 mode `0400` regular file일 때만 기동합니다. 컨테이너는 UID `10001`로 실행되므로 소유자를 맞춰야 합니다.
+
+```bash
+sudo chown 10001:10001 /run/secrets/koda_mcp.json
+sudo chmod 0400 /run/secrets/koda_mcp.json
+```
+
+**4. 이미지 빌드.** 연결망에서 wheelhouse를 채운 뒤 오프라인으로 굽습니다. 에어갭 번들까지 만들려면 `scripts/build_airgap.sh`를 사용합니다.
+
+```bash
+docker build --network=none --platform linux/amd64 -f deploy/Dockerfile -t koda-mcp-security:0.1.0 .
+```
+
+**5. 기동.**
+
+```bash
+KODA_MCP_CONFIG_PATH=/run/secrets/koda_mcp.json docker compose -f deploy/compose.yaml up -d
+```
+
+**6. 확인.** `/healthz`는 컨테이너 내부 확인용이며 Nginx에서 외부로 공개하지 않습니다. `Host`는 설정의 `public_host`와, `Origin`은 `allowed_origins`의 값과 정확히 일치해야 합니다.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8766/healthz
+curl -s -X POST http://127.0.0.1:8766/mcp \
+  -H 'Host: <KODA_FQDN>' \
+  -H 'Authorization: Bearer <raw-token>' \
+  -H 'Origin: https://<OPEN_WEBUI_FQDN>' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-06-18' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"koda_scan_changed_files","arguments":{"files":[{"path":"a.py","content":"import subprocess\nsubprocess.run(request.args[\"cmd\"], shell=True)\n"}]}}}'
+```
+
+인증 없이 호출하면 `401`, `Host`가 다르면 `421`, 등록되지 않은 `Origin`이면 `403`이 반환됩니다.
+
+**7. 클라이언트 연결.** 아래 [Continue 기본 구성](#continue-기본-구성)을 참고합니다.
+
 ## 로컬 확인
 
 연결망 Python 환경에 고정 의존성을 설치한 뒤 실행합니다.

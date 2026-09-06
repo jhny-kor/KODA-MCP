@@ -1,0 +1,292 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "KODA-MCP 요청 처리 흐름",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "backend": {
+          "label": "서버·워커"
+        },
+        "security": {
+          "label": "보안 통제"
+        },
+        "external": {
+          "label": "클라이언트"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "client",
+      "label": "클라이언트"
+    },
+    {
+      "id": "server",
+      "label": "MCP 서버"
+    },
+    {
+      "id": "worker",
+      "label": "스캔 워커 (격리 프로세스)"
+    },
+    {
+      "id": "stop",
+      "label": "거절 · 중단",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "intake",
+      "label": "요청 · 인증",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "guard",
+      "label": "검증 · 격리",
+      "fromCol": 2,
+      "toCol": 3,
+      "variant": "emphasis"
+    },
+    {
+      "id": "scanning",
+      "label": "검사 · 응답",
+      "fromCol": 4,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [
+    {
+      "id": "isolation",
+      "label": "프로세스 격리 경계",
+      "lane": "worker",
+      "fromCol": 3,
+      "toCol": 4,
+      "variant": "security"
+    }
+  ],
+  "mainPath": [
+    "request",
+    "auth",
+    "validate",
+    "stage",
+    "scan",
+    "respond",
+    "result"
+  ],
+  "nodes": [
+    {
+      "id": "request",
+      "lane": "client",
+      "col": 0,
+      "type": "external",
+      "label": "변경 파일 전송",
+      "sublabel": "Continue / Open WebUI",
+      "width": 150
+    },
+    {
+      "id": "result",
+      "lane": "client",
+      "col": 5,
+      "type": "external",
+      "label": "findings 수신",
+      "sublabel": "기준 · 줄 · 권고",
+      "width": 150
+    },
+    {
+      "id": "auth",
+      "lane": "server",
+      "col": 1,
+      "type": "security",
+      "label": "Bearer 인증",
+      "sublabel": "Host · Origin 확인",
+      "tag": "digest 비교",
+      "width": 150
+    },
+    {
+      "id": "validate",
+      "lane": "server",
+      "col": 2,
+      "type": "backend",
+      "label": "입력 검증",
+      "sublabel": "20파일 · 5MB · 확장자",
+      "width": 150
+    },
+    {
+      "id": "stage",
+      "lane": "server",
+      "col": 3,
+      "type": "backend",
+      "label": "임시 트리 기록",
+      "sublabel": "0700 · 심볼릭 링크 차단",
+      "width": 150
+    },
+    {
+      "id": "respond",
+      "lane": "server",
+      "col": 5,
+      "type": "backend",
+      "label": "응답 · 정리",
+      "sublabel": "임시 파일 삭제",
+      "width": 150
+    },
+    {
+      "id": "template",
+      "lane": "worker",
+      "col": 3,
+      "type": "backend",
+      "label": "상주 템플릿",
+      "sublabel": "설정 로드 전 확보",
+      "tag": "forkserver",
+      "width": 150
+    },
+    {
+      "id": "scan",
+      "lane": "worker",
+      "col": 4,
+      "type": "backend",
+      "label": "KODA 규칙 검사",
+      "sublabel": "비밀값 마스킹 포함",
+      "width": 150
+    },
+    {
+      "id": "denied",
+      "lane": "stop",
+      "col": 1,
+      "type": "security",
+      "label": "인증 거절",
+      "sublabel": "401 · 421 · 403",
+      "width": 150
+    },
+    {
+      "id": "rejected",
+      "lane": "stop",
+      "col": 2,
+      "type": "backend",
+      "label": "입력 거절",
+      "sublabel": "한도 초과 · 금지 확장자",
+      "width": 150
+    },
+    {
+      "id": "busy",
+      "lane": "stop",
+      "col": 3,
+      "type": "backend",
+      "label": "동시 요청 거절",
+      "sublabel": "단일 실행 락",
+      "width": 150
+    },
+    {
+      "id": "timeout",
+      "lane": "stop",
+      "col": 4,
+      "type": "security",
+      "label": "시간 초과",
+      "sublabel": "60초 · 워커 강제 종료",
+      "width": 150
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-request-auth",
+      "from": "request",
+      "to": "auth",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-auth-validate",
+      "from": "auth",
+      "to": "validate",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-validate-stage",
+      "from": "validate",
+      "to": "stage",
+      "label": "락 획득",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-stage-scan",
+      "from": "stage",
+      "to": "scan",
+      "variant": "emphasis",
+      "label": "fork"
+    },
+    {
+      "id": "e-template-scan",
+      "from": "template",
+      "to": "scan",
+      "label": "스냅샷 복제",
+      "variant": "security",
+      "role": "branch"
+    },
+    {
+      "id": "e-scan-respond",
+      "from": "scan",
+      "to": "respond",
+      "label": "findings",
+      "variant": "emphasis",
+      "role": "return"
+    },
+    {
+      "id": "e-respond-result",
+      "from": "respond",
+      "to": "result",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-auth-denied",
+      "from": "auth",
+      "to": "denied",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-validate-rejected",
+      "from": "validate",
+      "to": "rejected",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-validate-busy",
+      "from": "validate",
+      "to": "busy",
+      "variant": "security",
+      "role": "error",
+      "label": "락 사용 중"
+    },
+    {
+      "id": "e-scan-timeout",
+      "from": "scan",
+      "to": "timeout",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "격리 설계",
+      "items": [
+        "검사는 항상 별도 프로세스에서 수행되어 서버 본체를 보호합니다",
+        "템플릿은 인증 설정을 읽기 전에 확보되어 토큰이 워커로 넘어가지 않습니다"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "자문 전용",
+      "items": [
+        "클라이언트가 보낸 파일만 검사하며 저장소나 런타임은 읽지 않습니다",
+        "부분 검사 결과이며 합격 판정이 아닙니다. 비밀값은 <redacted>로 대체됩니다"
+      ]
+    }
+  ]
+}

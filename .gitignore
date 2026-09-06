@@ -9,3 +9,6 @@ build/
 config/koda_mcp.json
 .DS_Store
 .omc/
+*.visual-check.json
+*.visual-check.html
+*.visual-check.*.png
