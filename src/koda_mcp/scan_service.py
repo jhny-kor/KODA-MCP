@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import multiprocessing
+import multiprocessing.forkserver
 import os
 import re
 import shutil
@@ -61,6 +62,15 @@ MAX_REQUEST_BYTES = 5 * 1024 * 1024
 # stays far below this, generated and minified files are far above it.
 MAX_ANALYZED_LINE_BYTES = 2000
 SCAN_TIMEOUT_SECONDS = 60.0
+# forkserver keeps one template process and forks every scan from it, which
+# skips the interpreter start and the module imports that spawn repeats on each
+# request. It is unavailable on some platforms, and fork is not an option at
+# all: this process runs threads and an event loop, so a forked child can
+# inherit a held lock and never wake up.
+WORKER_START_METHOD = (
+    "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
+)
+_WORKER_PRELOAD = ["koda_mcp._worker"]
 TEMP_ROOT_BASE = Path("/tmp/koda-mcp")
 _PATH_RULE = re.compile(r"^[A-Za-z]:")
 _FORBIDDEN_EXTENSIONS = frozenset(
@@ -294,6 +304,21 @@ def _is_generated_or_minified(content: bytes) -> bool:
         start = end + 1
 
 
+def ensure_worker_template() -> None:
+    """Start the worker template before this process reads any secret.
+
+    Under forkserver every scan child is forked from a template process, so a
+    child inherits whatever that template held when it was created. spawn had
+    nothing to inherit; this call is what replaces that guarantee. Starting the
+    template first means its snapshot predates the auth configuration, so no
+    token can reach a scan child. Calling it again is harmless.
+    """
+    if WORKER_START_METHOD != "forkserver":
+        return
+    multiprocessing.get_context("forkserver").set_forkserver_preload(_WORKER_PRELOAD)
+    multiprocessing.forkserver.ensure_running()
+
+
 def _ensure_temp_root() -> Path:
     base = TEMP_ROOT_BASE
     if base.is_symlink():
@@ -481,7 +506,7 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
             )
             root = _write_request_files(files, request_id)
             result_path = root / f".result-{uuid.uuid4().hex}.json"
-            context = multiprocessing.get_context("spawn")
+            context = multiprocessing.get_context(WORKER_START_METHOD)
             process = context.Process(
                 target=_scan_worker,
                 args=(str(root), str(result_path), request.standard, unanalyzed),

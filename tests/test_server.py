@@ -323,6 +323,25 @@ class ServerTests(unittest.TestCase):
             )
         return json.loads(stream.getvalue().strip().splitlines()[-1])
 
+    def test_worker_template_starts_before_the_configuration_is_read(self) -> None:
+        # Scan children inherit the template's memory, so the template has to be
+        # taken while this process still holds no token. Reversing these two
+        # calls would put the auth configuration into every scan child.
+        order: list[str] = []
+        real_load_config = server_module.load_config
+        with (
+            mock.patch.object(
+                server_module, "ensure_worker_template", side_effect=lambda: order.append("template")
+            ),
+            mock.patch.object(
+                server_module,
+                "load_config",
+                side_effect=lambda path: (order.append("config"), real_load_config(path))[1],
+            ),
+        ):
+            create_app(self.config_path)
+        self.assertEqual(["template", "config"], order)
+
     def test_request_log_records_a_fully_captured_response(self) -> None:
         record = self._guidance_log_record()
         self.assertFalse(record["response_body_truncated"])

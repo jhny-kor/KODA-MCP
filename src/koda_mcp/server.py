@@ -19,7 +19,7 @@ from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .contracts import ChangedFile, ChangedFilesRequest, GuidanceRequest, GuidanceResponse, ScanResponse, StandardId
-from .scan_service import MAX_RESULT_BYTES, get_security_guidance, scan_changed_files
+from .scan_service import MAX_RESULT_BYTES, ensure_worker_template, get_security_guidance, scan_changed_files
 
 
 DEFAULT_CONFIG_PATH = Path("/run/secrets/koda_mcp.json")
@@ -416,6 +416,9 @@ def _build_mcp_server() -> MCPServer:
 
 
 def create_app(config_path: Path = DEFAULT_CONFIG_PATH) -> _AuthenticatedApp:
+    # Must precede load_config: scan children are forked from a template of this
+    # process, so the template has to be taken before any token is in memory.
+    ensure_worker_template()
     config = load_config(config_path)
     server = _build_mcp_server()
     inner = server.streamable_http_app(

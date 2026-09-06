@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -35,6 +36,11 @@ def _run_cleanup_failure_probe() -> int:
     request = ChangedFilesRequest(files=[ChangedFile(path="src/a.py", content="")])
     asyncio.run(scan_service.scan_changed_files(request))
     return 99
+
+
+def _report_sentinel(queue) -> None:
+    from koda_mcp import _worker
+    queue.put(getattr(_worker, "_TEMPLATE_ORDER_SENTINEL", None))
 
 
 class ScanServiceTests(unittest.TestCase):
@@ -134,6 +140,25 @@ class ScanServiceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 70, result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertNotIn("sentinel", result.stderr)
+
+    def test_scan_child_cannot_see_state_added_after_the_template_started(self) -> None:
+        # This is the property that makes the start order matter. A child is
+        # forked from the template, not from this process, so anything loaded
+        # here afterwards - the auth configuration above all - never reaches it.
+        if scan_service.WORKER_START_METHOD != "forkserver":
+            self.skipTest("forkserver is unavailable on this platform")
+        scan_service.ensure_worker_template()
+        _worker._TEMPLATE_ORDER_SENTINEL = "loaded-after-the-template"
+        try:
+            context = multiprocessing.get_context("forkserver")
+            queue = context.Queue()
+            child = context.Process(target=_report_sentinel, args=(queue,))
+            child.start()
+            seen = queue.get(timeout=60)
+            child.join(60)
+        finally:
+            del _worker._TEMPLATE_ORDER_SENTINEL
+        self.assertIsNone(seen)
 
     def test_worker_module_does_not_import_pydantic(self) -> None:
         # The worker is the spawn target, so whatever it imports is paid again on
