@@ -97,12 +97,9 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
         return []
 
     findings: list[Finding] = []
-    per_rule_counts: dict[str, int] = {}
     for line_number, line in enumerate(lines, start=1):
         for rule in SECRET_RULES:
             for match in rule.pattern.finditer(line):
-                if per_rule_counts.get(rule.rule_id, 0) >= 5:
-                    continue
                 secret_value = match.group(rule.secret_group)
                 if rule.rule_id in ("secret.generic-assignment", "secret.sensitive-comment") and _looks_like_secret_reference(line, secret_value):
                     continue
@@ -131,7 +128,6 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
                         ),
                     )
                 )
-                per_rule_counts[rule.rule_id] = per_rule_counts.get(rule.rule_id, 0) + 1
     return findings
 
 

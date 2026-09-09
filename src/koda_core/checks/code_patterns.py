@@ -940,12 +940,10 @@ def _java_null_pointer_findings(path: Path, lines: list[str], analysis_lines: li
 
         brace_depth += stripped.count("{") - stripped.count("}")
 
-    # Bound report noise without allowing early review candidates to hide a
-    # later definite dereference.
     return sorted(
         findings,
         key=lambda finding: (finding.verification_status != "confirmed", finding.line or 0),
-    )[:5]
+    )
 
 
 def _java_document_builder_xxe_findings(path: Path, lines: list[str], analysis_lines: list[str]) -> list[Finding]:
@@ -1019,9 +1017,6 @@ def _java_document_builder_xxe_findings(path: Path, lines: list[str], analysis_l
                 ),
             )
         )
-        if len(findings) >= 5:
-            break
-
     return findings
 
 
@@ -1490,19 +1485,6 @@ def _candidate_is_suppressed(
         nearby = "\n".join(lines[start:end])
     else:
         nearby = line
-    if rule_id == "code.api-missing-rate-limit" and re.search(
-        r"\b(express-rate-limit|rateLimit\s*\(|RateLimiter|SlowAPIMiddleware|@\w*limiter\.limit|Bucket4j|resilience4j[^\n]*ratelimit)",
-        document,
-        re.IGNORECASE,
-    ):
-        return True
-    if rule_id == "code.api-route-missing-auth" and re.search(
-        r"\b(app|router|server)\.use\s*\([^\n]*(?:authenticate|authorize|requireAuth|requireAdmin)|"
-        r"\b(?:SecurityFilterChain|OncePerRequestFilter|AuthMiddleware|AuthorizationMiddleware)\b",
-        document,
-        re.IGNORECASE,
-    ):
-        return True
     if rule_id == "code.unsafe-deserialization" and re.search(
         r"yaml\.load\s*\([^\n]*(?:Loader\s*=\s*yaml\.SafeLoader|SafeLoader)", line, re.IGNORECASE
     ):
@@ -1636,11 +1618,12 @@ def _starts_function_scope(line: str, suffix: str) -> bool:
     if suffix == ".swift":
         return bool(re.match(r"(?:[\w@]+\s+)*func\s+[A-Za-z_]\w*\s*\(", stripped))
     if suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        return bool(
-            re.match(r"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(", stripped)
-            or re.match(r"(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=.*=>\s*\{", stripped)
-            or re.match(r"(?:async\s+)?[A-Za-z_$][\w$]*\s*\([^;{}]*\)\s*\{", stripped)
-        )
+        if re.match(r"(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+[A-Za-z_$][\w$]*\s*\(", stripped):
+            return True
+        if re.match(r"(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=.*=>\s*\{", stripped):
+            return True
+        match = re.match(r"(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*\{", stripped)
+        return bool(match and match.group(1) not in {"if", "for", "while", "switch", "catch", "try"})
     if suffix == ".php":
         return bool(re.match(r"(?:public\s+|protected\s+|private\s+|static\s+)*function\s+\w+\s*\(", stripped, re.I))
     if suffix in {".java", ".kt", ".cs", ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp"}:
@@ -1651,6 +1634,27 @@ def _starts_function_scope(line: str, suffix: str) -> bool:
         )
         return bool(match and match.group(1) not in {"if", "for", "while", "switch", "catch", "try", "synchronized"})
     return False
+
+
+def _brace_delta(line: str) -> int:
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    for char in line:
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in {'"', "'", "`"}:
+            quote = char
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+    return depth
 
 
 def _call_arguments(line: str, call_end: int) -> str | None:
@@ -1701,11 +1705,32 @@ def _contextual_dataflow_findings(path: Path, lines: list[str], code_lines: list
     tainted: set[str] = set()
     sanitized: set[str] = set()
     safe_prepared_statements: set[str] = set()
+    scope_stack: list[tuple[int, set[str], set[str], set[str]]] = []
+    brace_depth = 0
+    brace_stack: list[tuple[int, set[str], set[str], set[str]]] = []
 
     for line_number, code_line in enumerate(code_lines, start=1):
+        indentation = len(code_line) - len(code_line.lstrip())
         line = code_line.strip()
         if not line or _is_comment(line):
             continue
+        next_brace_depth = brace_depth
+        if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            next_brace_depth += _brace_delta(code_line)
+        if suffix == ".py":
+            while scope_stack and indentation <= scope_stack[-1][0]:
+                _, tainted, sanitized, safe_prepared_statements = scope_stack.pop()
+        elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            while brace_stack and brace_depth <= brace_stack[-1][0]:
+                _, tainted, sanitized, safe_prepared_statements = brace_stack.pop()
+        if _starts_function_scope(line, suffix):
+            if suffix == ".py":
+                scope_stack.append((indentation, tainted.copy(), sanitized.copy(), safe_prepared_statements.copy()))
+            elif suffix in {".js", ".jsx", ".ts", ".tsx"}:
+                brace_stack.append((brace_depth, tainted.copy(), sanitized.copy(), safe_prepared_statements.copy()))
+            tainted.clear()
+            sanitized.clear()
+            safe_prepared_statements.clear()
         assignment = _ASSIGNMENT.match(line)
         if assignment:
             name, expression = assignment.groups()
@@ -1726,6 +1751,8 @@ def _contextual_dataflow_findings(path: Path, lines: list[str], code_lines: list
 
         reaches_sink = _has_unsanitized_taint(line, tainted, keep_php_variables=suffix == ".php")
         if not reaches_sink:
+            if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+                brace_depth = next_brace_depth
             continue
 
         lowered_line = line.lower()
@@ -1778,8 +1805,8 @@ def _contextual_dataflow_findings(path: Path, lines: list[str], code_lines: list
                 )
             )
             break
-        if len(findings) >= 45:
-            break
+        if suffix in {".js", ".jsx", ".ts", ".tsx"}:
+            brace_depth = next_brace_depth
     return findings
 
 
@@ -1812,8 +1839,6 @@ def _mybatis_sql_findings(path: Path, lines: list[str], code_lines: list[str]) -
                     ),
                 )
             )
-            if len(findings) >= 5:
-                break
         if re.search(r"<\s*/\s*(?:select|insert|update|delete)\s*>", line, re.IGNORECASE):
             in_statement = False
     return findings
@@ -1836,7 +1861,7 @@ def _jsp_xss_findings(path: Path, lines: list[str], code_lines: list[str]) -> li
     seen: set[int] = set()
 
     def add(index: int, status: str, note: str) -> None:
-        if index in seen or len(findings) >= 5:
+        if index in seen:
             return
         findings.append(
             Finding(
@@ -2261,39 +2286,6 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
     if lines is None:
         return []
 
-    # Recognized dependency sources are inventory input, not meaningful
-    # application source for line-regex analysis. A banner alone is insufficient:
-    # first-party bundles often include a library banner before application code.
-    if path.suffix.lower() in {".js", ".mjs", ".cjs"}:
-        parts = {part.lower().replace("-", "_") for part in path.parts}
-        is_pdfjs_bundle = (
-            any(part in {"pdfjs", "pdf.js"} or part.startswith("pdfjs_") for part in parts)
-            and path.name.lower() in {
-                "viewer.js", "viewer.mjs", "pdf.js", "pdf.min.js",
-                "pdf.worker.js", "pdf.worker.min.js", "pdf.worker.mjs",
-            }
-        )
-        if is_pdfjs_bundle:
-            return []
-        banner = "\n".join(lines[:5])[:2000]
-        is_dependency_path = bool(parts.intersection({"node_modules", "vendor", "vendors", "thirdparty", "third_party"}))
-        has_library_banner = bool(re.search(
-            r"(?i)\b(jquery|jsrender|datepicker|lodash|bootstrap|angular|react|vue|moment)\b[^\n]{0,100}\bv?\d+(?:\.\d+)+",
-            banner,
-        ))
-        versioned_library_file = re.match(
-            r"(?i)^(jquery|jsrender|datepicker|lodash|bootstrap|angular|react(?:\.production)?|vue(?:\.runtime)?|moment)"
-            r"[._-]?v?\d+(?:\.\d+)*(?:\.min)?\.(?:js|mjs|cjs)$",
-            path.name,
-        )
-        named_library_file = re.match(
-            r"(?i)^(jquery|jsrender|datepicker|lodash|bootstrap|angular|react(?:\.production)?|vue(?:\.runtime)?|moment)"
-            r"(?:\.min)?\.(?:js|mjs|cjs)$",
-            path.name,
-        )
-        if versioned_library_file or (named_library_file and (is_dependency_path or has_library_banner)):
-            return []
-
     suffix = _analysis_suffix(path)
     # Every rule below reads the whole-file code view, not the raw line, so a
     # single line is never judged out of its file context.
@@ -2306,10 +2298,8 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
     if suffix in {".java", ".kt"}:
         findings.extend(_java_null_pointer_findings(path, lines, code_lines))
     findings.extend(_contextual_dataflow_findings(path, lines, statements))
-    per_rule_counts: dict[str, int] = {}
     seen_locations: set[tuple[str, int | None]] = set()
     for finding in findings:
-        per_rule_counts[finding.rule_id] = per_rule_counts.get(finding.rule_id, 0) + 1
         seen_locations.add((finding.rule_id, finding.line))
     document = "\n".join(code_lines)
     filename = path.name
@@ -2328,8 +2318,6 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
                 and suffix in {".java", ".kt"}
                 and "DocumentBuilderFactory" in line
             ):
-                continue
-            if per_rule_counts.get(rule.rule_id, 0) >= 5:
                 continue
             if rule.pattern.search(line):
                 if (rule.rule_id, line_number) in seen_locations:
@@ -2354,7 +2342,6 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
                         ),
                     )
                 )
-                per_rule_counts[rule.rule_id] = per_rule_counts.get(rule.rule_id, 0) + 1
     return findings
 
 

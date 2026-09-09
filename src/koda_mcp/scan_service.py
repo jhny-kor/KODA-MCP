@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from koda_core.checks import code_patterns, secrets
+from koda_core.checks import code_patterns, common, secrets
 
 from .contracts import (
     ChangedFilesRequest,
@@ -26,6 +26,7 @@ from .contracts import (
     ScanFinding,
     ScanResponse,
     StandardId,
+    UnevaluatedFile,
 )
 from ._worker import (
     MAX_FILE_BYTES,
@@ -41,18 +42,13 @@ from .standard_catalog_data import STANDARD_ORDER, STANDARD_REFERENCES
 
 MCP_SERVER_VERSION = "0.1.0"
 MCP_SDK_VERSION = "2.0.0"
-# src/koda_core is no longer a verbatim copy of the upstream commit. It carries
-# local changes to code_patterns.py: the persistent-cookie rule is anchored so
-# it cannot backtrack cubically, the Java null scan prefilters tracked names
-# before building a regex, null state resets at method boundaries, and .mjs,
-# .cjs and .htm analyze as their primary extension, and the password-hash rule
-# is skipped on lines with no hash-API literal. The "-modified" suffix says
-# so, in the same spirit as `git describe --dirty`.
+# The vendored core includes local accuracy and performance fixes; the tree
+# hash below identifies the exact shipped sources rather than upstream alone.
 KODA_SOURCE_COMMIT = "b2987c1211e745aa9dc99db94e0ad7eb73cc11e4-modified"
 # sha256 over "<repo-relative path>\0<file sha256>\n" for every file under
 # src/koda_core, sorted by path, excluding __pycache__ and .pyc. Recompute with
 # scripts/koda_core_tree_sha256.py after changing anything under src/koda_core.
-KODA_SOURCE_TREE_SHA256 = "b48baf15c3fddeb052fd70ce3329c24e22cc9f1042dd2a84e20915fcf0b2e2f4"
+KODA_SOURCE_TREE_SHA256 = "03e80b3f2a2abab5750691f2eed1e50b457cdcce98bc67da2909bc856e8d10ad"
 
 MAX_FILES = 20
 MAX_REQUEST_BYTES = 5 * 1024 * 1024
@@ -85,6 +81,8 @@ _COVERAGE_GAPS = [
     "provided_files_only",
     "project_context_not_evaluated",
     "dependency_resolution_not_evaluated",
+    "dependency_cve_not_evaluated",
+    "interprocedural_dataflow_not_evaluated",
     "runtime_not_evaluated",
     "formal_compliance_not_evaluated",
     "file_selection_agent_controlled",
@@ -171,6 +169,7 @@ def _response(
     coverage_gaps: list[str],
     findings: list[ScanFinding] | None = None,
     findings_truncated: bool = False,
+    unevaluated_files: list[UnevaluatedFile] | None = None,
 ) -> ScanResponse:
     return ScanResponse(
         request_id=request_id,
@@ -182,6 +181,7 @@ def _response(
         temporary_source_state=temporary_source_state,
         error_code=error_code,
         coverage_gaps=coverage_gaps,
+        unevaluated_files=unevaluated_files or [],
         findings=findings or [],
         standard_references=_standard_references_for_rules(
             {finding.rule_id for finding in findings or []},
@@ -553,6 +553,29 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
                 else:
                     findings, findings_truncated = parsed
                     gaps = list(_COVERAGE_GAPS)
+                    unevaluated_files = []
+                    for item in files:
+                        if item.path in unanalyzed:
+                            unevaluated_files.append(UnevaluatedFile(
+                                path=item.path, scope="all_checks", reason="line_length_limit",
+                            ))
+                        elif not common.is_text_candidate(Path(item.path)):
+                            # Filename-specific dependency/configuration parsers can still run.
+                            for scope in ("code", "secrets", "configuration_text"):
+                                unevaluated_files.append(UnevaluatedFile(
+                                    path=item.path, scope=scope, reason="unsupported_text_file_type",
+                                ))
+                        elif (Path(item.path).suffix.lower() not in code_patterns.CODE_EXTENSIONS
+                              and Path(item.path).name not in code_patterns.CODE_FILENAMES):
+                            unevaluated_files.append(UnevaluatedFile(
+                                path=item.path, scope="code", reason="unsupported_code_file_type",
+                            ))
+                    if any(item.scope == "code" for item in unevaluated_files):
+                        gaps.append("unsupported_code_file_types_not_evaluated")
+                    if any(item.reason == "unsupported_text_file_type" for item in unevaluated_files):
+                        gaps.append("unsupported_text_file_types_not_evaluated")
+                    if request.standard != "all":
+                        gaps.append("findings_filtered_by_selected_standard")
                     if any(Path(item.path).name == "package.json" for item in files):
                         gaps.append("dependency_lockfile_presence_not_evaluated")
                     if unanalyzed:
@@ -570,6 +593,7 @@ async def scan_changed_files(request: ChangedFilesRequest) -> ScanResponse:
                         coverage_gaps=gaps,
                         findings=findings,
                         findings_truncated=findings_truncated,
+                        unevaluated_files=unevaluated_files,
                     )
         except BaseException:
             if process is not None and process.is_alive():

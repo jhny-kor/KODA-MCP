@@ -134,7 +134,9 @@ class ScanFinding(BaseModel):
 
     rule_id: str
     severity: Literal["info", "low", "medium", "high", "critical"]
-    verification_status: Literal["confirmed", "needs_review", "unverified"]
+    verification_status: Literal["confirmed", "needs_review", "unverified"] = Field(
+        description="confirmed means local pattern/flow evidence, not proven exploitability; needs_review is a candidate; unverified is an evaluation gap",
+    )
     title: str
     path: str
     line: int | None
@@ -144,7 +146,7 @@ class ScanFinding(BaseModel):
         max_length=500,
         description="Exact detected source line with known secret values replaced by <redacted>",
     )
-    reason: str = Field(max_length=500)
+    reason: str = Field(max_length=500, description="Redacted local verification rationale, or detector description when no specific rationale exists")
     recommendation: str
     criteria: list[StandardCriterion] = Field(description="Mapped criteria ordered with direct controls first")
     criteria_truncated: bool = Field(description="True when lower-priority related mappings were omitted")
@@ -157,6 +159,14 @@ class ScanEngine(BaseModel):
     mcp_sdk_version: str
     koda_source_commit: str
     koda_source_tree_sha256: str
+
+
+class UnevaluatedFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    scope: Literal["code", "secrets", "configuration_text", "all_checks"]
+    reason: Literal["unsupported_code_file_type", "unsupported_text_file_type", "line_length_limit"]
 
 
 class ScanResponse(BaseModel):
@@ -187,6 +197,10 @@ class ScanResponse(BaseModel):
         None,
     ]
     coverage_gaps: list[str]
+    unevaluated_files: list[UnevaluatedFile] = Field(
+        default_factory=list,
+        description="Files with an unevaluated scope; code-only exclusions may still receive secret/configuration checks",
+    )
     findings: list[ScanFinding]
     standard_references: list[StandardReference] = Field(description="Edition and primary-source metadata for criteria")
     mapping_notice: Literal["rule_mapping_not_formal_compliance"] = Field(

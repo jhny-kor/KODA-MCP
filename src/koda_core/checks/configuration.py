@@ -44,7 +44,7 @@ def check_file(path: Path, target: TargetConfig) -> list[Finding]:
         findings.extend(_check_dockerfile(path, target))
     if path.name in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
         findings.extend(_check_compose(path, target))
-    if _looks_like_kubernetes_manifest(path):
+    if _looks_like_kubernetes_manifest(path, target):
         findings.extend(_check_kubernetes_manifest(path, target))
     if path.suffix.lower() in {".tf", ".tfvars"}:
         findings.extend(_check_terraform(path, target))
@@ -92,9 +92,10 @@ def _check_text_config(path: Path, lines: list[str]) -> list[Finding]:
     findings: list[Finding] = []
     for line_number, raw_line in enumerate(lines, start=1):
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        content = _strip_yaml_comment(line).strip()
+        if not content or content.startswith("#"):
             continue
-        if DEBUG_RE.search(line):
+        if DEBUG_RE.search(content):
             findings.append(
                 Finding(
                     rule_id="config.debug-enabled",
@@ -108,7 +109,7 @@ def _check_text_config(path: Path, lines: list[str]) -> list[Finding]:
                     recommendation="Disable debug mode in shared, staging, and production configurations.",
                 )
             )
-        if _should_check_development_environment(path) and DEV_ENV_RE.search(line):
+        if _should_check_development_environment(path) and DEV_ENV_RE.search(content):
             findings.append(
                 Finding(
                     rule_id="config.development-environment",
@@ -200,9 +201,18 @@ def _check_compose(path: Path, target: TargetConfig) -> list[Finding]:
         return []
 
     findings: list[Finding] = []
+    block_indent: int | None = None
     for line_number, raw_line in enumerate(lines, start=1):
+        indent = len(raw_line) - len(raw_line.lstrip())
         line = raw_line.strip()
-        lowered = line.lower()
+        if block_indent is not None:
+            if not line or indent > block_indent:
+                continue
+            block_indent = None
+        lowered = _strip_yaml_comment(line).strip().lower()
+        if _is_yaml_block_scalar(lowered):
+            block_indent = indent
+            continue
         if lowered == "privileged: true":
             findings.append(
                 Finding(
@@ -290,14 +300,34 @@ def _check_compose(path: Path, target: TargetConfig) -> list[Finding]:
     return findings
 
 
-def _looks_like_kubernetes_manifest(path: Path) -> bool:
+def _looks_like_kubernetes_manifest(path: Path, target: TargetConfig) -> bool:
     lower_name = path.name.lower()
     if lower_name in K8S_FILE_NAMES:
         return True
     if path.suffix.lower() not in {".yaml", ".yml"}:
         return False
     lowered_parts = {part.lower() for part in path.parts}
-    return bool({"k8s", "kubernetes", "manifests", "helm"} & lowered_parts)
+    if {"k8s", "kubernetes", "manifests", "helm"} & lowered_parts:
+        return True
+    lines = read_text_lines(path, target.max_file_size_bytes)
+    if not lines:
+        return False
+    metadata: set[str] = set()
+    block_indent: int | None = None
+    for raw_line in lines:
+        indent = len(raw_line) - len(raw_line.lstrip())
+        line = _strip_yaml_comment(raw_line).strip()
+        if block_indent is not None:
+            if not line or indent > block_indent:
+                continue
+            block_indent = None
+        if _is_yaml_block_scalar(line):
+            block_indent = indent
+            continue
+        match = re.match(r"(apiVersion|kind)\s*:\s*\S", line)
+        if match:
+            metadata.add(match.group(1))
+    return metadata == {"apiVersion", "kind"}
 
 
 def _check_kubernetes_manifest(path: Path, target: TargetConfig) -> list[Finding]:
@@ -306,9 +336,18 @@ def _check_kubernetes_manifest(path: Path, target: TargetConfig) -> list[Finding
         return []
 
     findings: list[Finding] = []
+    block_indent: int | None = None
     for line_number, raw_line in enumerate(lines, start=1):
+        indent = len(raw_line) - len(raw_line.lstrip())
         line = raw_line.strip()
-        lowered = line.lower()
+        if block_indent is not None:
+            if not line or indent > block_indent:
+                continue
+            block_indent = None
+        lowered = _strip_yaml_comment(line).strip().lower()
+        if _is_yaml_block_scalar(lowered):
+            block_indent = indent
+            continue
         if lowered == "privileged: true":
             findings.append(
                 Finding(
@@ -436,6 +475,29 @@ def _check_kubernetes_manifest(path: Path, target: TargetConfig) -> list[Finding
                 )
             )
     return findings
+
+
+def _strip_yaml_comment(line: str) -> str:
+    """Remove YAML comments while preserving hashes inside quoted strings."""
+    quote = None
+    escaped = False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote == '"':
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {'"', "'"}:
+            quote = char
+        elif char == "#" and (index == 0 or line[index - 1].isspace()):
+            return line[:index]
+    return line
+
+
+def _is_yaml_block_scalar(line: str) -> bool:
+    return bool(re.search(r":\s*[|>](?:[+\-]?\d|\d[+\-]?|[+\-])?\s*$", line))
 
 
 def _check_terraform(path: Path, target: TargetConfig) -> list[Finding]:

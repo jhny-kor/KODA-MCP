@@ -34,6 +34,10 @@ CHECKS = (
     ("configuration", configuration.check_file),
     ("code", code_patterns.check_file),
 )
+# Detection requires an assignment at line start to limit false positives;
+# output redaction also masks the same assignment embedded in a snippet/note.
+_GENERIC_SECRET_RULE = next(rule for rule in secrets.SECRET_RULES if rule.rule_id == "secret.generic-assignment")
+_INLINE_SECRET_PATTERN = re.compile(_GENERIC_SECRET_RULE.pattern.pattern.replace(r"^\s*", r"(?<!\w)", 1))
 
 
 def _criteria_for_rule(
@@ -87,6 +91,9 @@ def _mask_secret_match(match: re.Match[str], secret_group: int) -> str:
 
 def _redact_source_line(line: str) -> str:
     redacted = line.replace("\t", "    ")
+    redacted = _INLINE_SECRET_PATTERN.sub(
+        lambda match: _mask_secret_match(match, _GENERIC_SECRET_RULE.secret_group), redacted,
+    )
     for rule in secrets.SECRET_RULES:
         redacted = rule.pattern.sub(
             lambda match, group=rule.secret_group: _mask_secret_match(match, group),
@@ -142,7 +149,7 @@ def _safe_finding(
         "end_line": end_line,
         "redacted_snippet": redacted_snippet,
         "reason": _remove_control_characters(
-            finding.description,
+            _redact_source_line(finding.verification_note or finding.description),
             500,
             "The selected rule matched this source location; review the surrounding context.",
         ),

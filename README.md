@@ -147,6 +147,10 @@ MCP 엔드포인트는 `https://<KODA_FQDN>/mcp`이며 Continue용 token과 Open
 
 각 line-level finding은 `start_line`, `end_line`, `redacted_snippet`, `reason`을 함께 반환합니다. 알려진 비밀번호·토큰·키 값은 snippet에서 `<redacted>`로 완전히 대체됩니다. 여러 줄에서 발견되면 각 줄이 별도 finding으로 반환되며, `findings_truncated=true`이면 안전 한도를 넘어 일부 finding이 생략된 상태입니다.
 
+## Open WebUI 연결
+
+[폐쇄망 설치 문서의 Open WebUI 연결 절차](deploy/README-airgap.ko.md#6-open-webui-연결)를 따릅니다. 공유 Docker 네트워크 또는 HTTPS 프록시 선택, 원본 Bearer 토큰 등록, 실제 도구 호출 확인과 오류별 조치가 포함되어 있습니다.
+
 ## Continue 기본 구성
 
 다음 값을 조직의 실제 내부 FQDN, CA 경로, 모델 ID로 교체합니다. KODA token과 모델 API key는 workspace 파일에 직접 쓰지 않고 조직이 선택한 `.env` 또는 Continue secret 저장소에서 주입합니다.
