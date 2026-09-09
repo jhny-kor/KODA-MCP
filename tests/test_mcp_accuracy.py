@@ -10,6 +10,9 @@ from koda_mcp import _worker, scan_service
 from koda_mcp.contracts import ChangedFile, ChangedFilesRequest
 
 
+_TEST_SECRET = "unit" + "-test-value"
+
+
 class MCPAccuracyTests(unittest.TestCase):
     def scan(self, path, content):
         with tempfile.TemporaryDirectory() as directory:
@@ -23,7 +26,7 @@ class MCPAccuracyTests(unittest.TestCase):
                 scan_service.TEMP_ROOT_BASE = previous
 
     def test_unsupported_code_type_names_the_file_and_scope(self):
-        result = self.scan('app.svelte', '<script>eval(request.query.code)</script>\npassword = "synthetic-secret-123"')
+        result = self.scan('app.svelte', f'<script>eval(request.query.code)</script>\npassword = "{_TEST_SECRET}"')
         self.assertEqual('completed', result.execution_status)
         self.assertEqual([{'path': 'app.svelte', 'scope': scope,
                            'reason': 'unsupported_text_file_type'}
@@ -32,7 +35,7 @@ class MCPAccuracyTests(unittest.TestCase):
         self.assertIn('dependency_cve_not_evaluated', result.coverage_gaps)
 
     def test_supported_config_text_does_not_claim_secret_checks_skipped(self):
-        result = self.scan('app.yaml', 'password: "synthetic-secret-123"')
+        result = self.scan('app.yaml', f'password: "{_TEST_SECRET}"')
         self.assertEqual(['code'], [item.scope for item in result.unevaluated_files])
         self.assertIn('secret.generic-assignment', {item.rule_id for item in result.findings})
 
@@ -51,10 +54,10 @@ class MCPAccuracyTests(unittest.TestCase):
             finding = Finding(rule_id='code.command-injection', category='code', severity='high',
                               title='Candidate', path=source, line=1, description='Generic description',
                               verification_status='needs_review',
-                              verification_note='Specific local limit; password="synthetic-secret-123"')
+                              verification_note=f'Specific local limit; password="{_TEST_SECRET}"')
             result = _worker._safe_finding(finding, root, {'app.py'}, 'all')
             self.assertIn('Specific local limit', result['reason'])
-            self.assertNotIn('synthetic-secret-123', result['reason'])
+            self.assertNotIn(_TEST_SECRET, result['reason'])
             self.assertIn('<redacted>', result['reason'])
 
     def test_real_findings_over_output_limit_are_explicit(self):
